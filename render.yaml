@@ -14,3 +14,7 @@ services:
         value: "10"
       - key: PORT
         value: "10000"
+        - key: TF_NUM_INTEROP_THREADS
+        value: "1"
+      - key: TF_NUM_INTRAOP_THREADS
+        value: "1"
