@@ -1,0 +1,531 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1.0"/>
+<title>Transformer Health Monitor</title>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-database-compat.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<style>
+*{box-sizing:border-box;margin:0;padding:0;font-family:'Segoe UI',Arial,sans-serif}
+html,body{width:100%;height:100%;overflow:hidden;background:#060e1a;color:#e5e7eb}
+.app{height:100vh;width:100vw;display:grid;grid-template-columns:240px 1fr;overflow:hidden}
+.side{background:#030912;border-right:1px solid #1a2640;padding:16px 12px;display:flex;flex-direction:column;gap:12px}
+.brand h1{font-size:16px;line-height:1.3;color:#f0f6ff;padding-bottom:4px}
+.brand p{font-size:11px;color:#7a90b0;margin-top:5px;line-height:1.4}
+.badge{display:inline-block;margin-top:10px;padding:7px 11px;border-radius:999px;font-size:11px;font-weight:700;background:#0f1f35;color:#e2e8f0;border:1px solid #2a3f60}
+.badge.live{background:#0a2a1a;color:#4ade80;border-color:#166534}
+.badge.off{background:#2a0a0a;color:#f87171;border-color:#7f1d1d}
+.nav{display:flex;flex-direction:column;gap:8px;margin-top:4px}
+.nav button{width:100%;text-align:left;border:1px solid #1a2640;background:#080f1e;color:#94a3b8;border-radius:12px;padding:11px 13px;font-weight:600;cursor:pointer;font-size:12px;transition:.15s}
+.nav button.active,.nav button:hover{background:#0f2040;border-color:#3b82f6;color:#fff}
+.sidefoot{margin-top:auto;font-size:11px;color:#64748b;line-height:1.6;padding:10px 8px;border-top:1px solid #1a2640}
+.main{height:100vh;overflow:hidden;padding:12px}
+.page{height:100%;display:none;flex-direction:column;gap:10px;overflow:hidden}
+.page.active{display:flex}
+.head h2{font-size:20px;color:#f0f6ff;font-weight:700}
+.head p{font-size:12px;color:#64748b;margin-top:3px}
+.card{background:#0a1628;border:1px solid #1a2640;border-radius:16px;padding:13px;min-width:0;overflow:hidden}
+.card-title{font-size:11px;color:#64748b;margin-bottom:7px;text-transform:uppercase;letter-spacing:.7px}
+.big{font-size:22px;font-weight:800;color:#f0f6ff;line-height:1.15;word-break:break-word}
+.metric{font-size:20px;font-weight:700;color:#f0f6ff}
+.sub{margin-top:6px;font-size:11px;color:#94a3b8;line-height:1.4}
+.mini{margin-top:4px;font-size:11px;color:#64748b;line-height:1.35}
+.barwrap{margin-top:8px;width:100%;height:8px;background:#1a2640;border-radius:999px;overflow:hidden}
+.bar{height:100%;width:0;background:linear-gradient(90deg,#22c55e,#eab308,#ef4444);transition:.4s}
+/* status colours */
+.normal{color:#22c55e}.warning{color:#facc15}.plan{color:#fb923c}.urgent{color:#ef4444}.critical{color:#f43f5e}.warm{color:#38bdf8}.buffer{color:#94a3b8}
+.low{color:#facc15}.high{color:#ef4444}
+/* pill */
+.pill{display:inline-block;margin-bottom:10px;padding:6px 12px;border-radius:999px;background:#0f2040;color:#93c5fd;font-size:12px;font-weight:700;border:1px solid #1d4ed8}
+
+/* ── OVERVIEW LAYOUT ── */
+.ov-wrap{display:flex;flex-direction:column;gap:10px;flex:1;overflow:hidden;min-height:0}
+.ov-kpi{display:grid;grid-template-columns:repeat(6,1fr);gap:10px}
+.ov-sensors{display:grid;grid-template-columns:repeat(5,1fr);gap:10px}
+.ov-charts{display:grid;grid-template-columns:repeat(5,1fr);gap:10px;flex:1;min-height:0}
+.ov-diag{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}
+.chart-inner{height:100%;min-height:0}canvas{max-height:100%;max-width:100%}
+.chart-card{padding:8px}
+
+/* ── PRESCRIPTION PAGE ── */
+.rx-split{display:grid;grid-template-columns:1.15fr .85fr;gap:14px;flex:1;min-height:0;overflow:hidden}
+.rx-title{font-size:24px;font-weight:800;color:#f0f6ff;margin-bottom:10px;line-height:1.2}
+.actions{margin-top:8px;padding-left:20px;color:#e5e7eb;font-size:14px}
+.actions li{margin-bottom:9px;line-height:1.45}
+.reason{margin-top:12px;padding:12px;border-radius:12px;background:#060e1a;border:1px solid #1a2640;color:#94a3b8;line-height:1.55;font-size:13px;max-height:180px;overflow-y:auto}
+.decision{display:grid;grid-template-columns:1fr 1fr;gap:10px;align-content:start}
+
+/* ── CONTRIBUTION PAGE ── */
+.contrib-wrap{display:grid;grid-template-columns:1fr 1fr;gap:14px;flex:1;min-height:0}
+.crow{margin-bottom:18px}
+.chead{display:flex;justify-content:space-between;font-size:14px;margin-bottom:7px;color:#cbd5e1}
+.pwrap{width:100%;height:14px;background:#1a2640;border-radius:999px;overflow:hidden}
+.pfill{height:100%;width:0;transition:.4s;border-radius:999px}
+.pf-current{background:#38bdf8}.pf-oil-temp{background:#f97316}.pf-winding-temp{background:#f43f5e}.pf-vibration{background:#a855f7}.pf-oil-level{background:#22c55e}
+.contrib-summary{display:grid;grid-template-columns:1fr 1fr;gap:10px;align-content:start}
+
+/* ── STATES PAGE ── */
+.states-wrap{display:flex;flex-direction:column;gap:10px;flex:1}
+.states-row{display:grid;grid-template-columns:repeat(5,1fr);gap:10px}
+.action-row{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}
+
+/* ── TELEMETRY PAGE ── */
+.telem-wrap{display:grid;grid-template-columns:repeat(2,1fr);gap:14px;flex:1;overflow:hidden}
+.telem-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;align-content:start}
+.fault-row{display:flex;gap:10px;margin-top:10px}
+.fault-badge{flex:1;text-align:center;padding:10px 8px;border-radius:12px;font-size:12px;font-weight:700;background:#0f1f35;border:1px solid #1a2640}
+.fault-badge.fault-ok{background:#0a1f10;color:#4ade80;border-color:#166534}
+.fault-badge.fault-err{background:#2a0a0a;color:#f87171;border-color:#7f1d1d}
+
+@media(max-width:1200px){
+  .ov-kpi{grid-template-columns:repeat(3,1fr)}
+  .ov-sensors{grid-template-columns:repeat(3,1fr)}
+  .ov-charts{grid-template-columns:repeat(3,1fr)}
+  .states-row{grid-template-columns:repeat(3,1fr)}
+}
+</style>
+</head>
+<body>
+<div class="app">
+<aside class="side">
+  <div class="brand">
+    <h1>Transformer Health Monitor</h1>
+    <p>LSTM Autoencoder · Anomaly Detection · Prescriptive Maintenance</p>
+    <div class="badge off" id="connectionBadge">Waiting for live data…</div>
+  </div>
+  <nav class="nav">
+    <button class="active" data-page="overviewPage">Overview</button>
+    <button data-page="prescriptionPage">Maintenance Prescription</button>
+    <button data-page="contributionPage">Sensor Contribution</button>
+    <button data-page="statesPage">States & Confidence</button>
+    <button data-page="telemPage">Operational Telemetry</button>
+  </nav>
+  <div class="sidefoot">Last update<br><strong id="lastUpdatedSide">--</strong></div>
+</aside>
+
+<main class="main">
+
+<!-- ══════════ OVERVIEW ══════════ -->
+<section class="page active" id="overviewPage">
+  <div class="head"><div><h2>Overview</h2><p>Live transformer status, sensor readings, reconstruction error and adaptive thresholds</p></div></div>
+  <div class="ov-wrap">
+    <!-- KPI row -->
+    <div class="ov-kpi">
+      <div class="card"><div class="card-title">System Status</div><div class="big" id="systemStatus">--</div><div class="sub" id="systemStatusText">No live data</div></div>
+      <div class="card"><div class="card-title">Health Index</div><div class="big" id="healthValue">--%</div><div class="barwrap"><div class="bar" id="healthBar"></div></div><div class="sub" id="healthText">Waiting…</div></div>
+      <div class="card"><div class="card-title">RUL Estimate</div><div class="big" id="rulValue">-- h</div><div class="sub" id="rulState">--</div></div>
+      <div class="card"><div class="card-title">Priority Score</div><div class="big" id="mpsValue">--</div><div class="sub" id="urgencyValue">--</div></div>
+      <div class="card"><div class="card-title">Main Cause</div><div class="big" id="mainCause">--</div><div class="sub" id="dominantStateText">--</div></div>
+      <div class="card"><div class="card-title">Operating Region</div><div class="big" id="operatingRegion" style="font-size:14px">--</div><div class="sub" id="prescriptionContext">--</div></div>
+    </div>
+    <!-- Sensor readings -->
+    <div class="ov-sensors">
+      <div class="card"><div class="card-title">Current</div><div class="metric" id="vCurrent">-- A</div><div class="mini" id="sCurrent">--</div></div>
+      <div class="card"><div class="card-title">Oil Temp</div><div class="metric" id="vOilTemp">-- °C</div><div class="mini" id="sOilTemp">--</div></div>
+      <div class="card"><div class="card-title">Winding Temp</div><div class="metric" id="vWindingTemp">-- °C</div><div class="mini" id="sWindingTemp">--</div></div>
+      <div class="card"><div class="card-title">Vibration</div><div class="metric" id="vVibration">--</div><div class="mini" id="sVibration">--</div></div>
+      <div class="card"><div class="card-title">Oil Level</div><div class="metric" id="vOilLevel">-- %</div><div class="mini" id="sOilLevel">--</div></div>
+    </div>
+    <!-- Charts -->
+    <div class="ov-charts">
+      <div class="card chart-card"><div class="chart-inner"><canvas id="chartCurrent"></canvas></div></div>
+      <div class="card chart-card"><div class="chart-inner"><canvas id="chartOilTemp"></canvas></div></div>
+      <div class="card chart-card"><div class="chart-inner"><canvas id="chartWindingTemp"></canvas></div></div>
+      <div class="card chart-card"><div class="chart-inner"><canvas id="chartVibration"></canvas></div></div>
+      <div class="card chart-card"><div class="chart-inner"><canvas id="chartOilLevel"></canvas></div></div>
+    </div>
+    <!-- Diagnostics -->
+    <div class="ov-diag">
+      <div class="card"><div class="card-title">Reconstruction Error</div><div class="big" id="reconError">--</div><div class="sub" id="smoothedError">Smoothed: --</div></div>
+      <div class="card"><div class="card-title">Trend / Persistence</div><div class="big" id="trendValue">--</div><div class="sub" id="persistenceValue">Persistence: --</div><div class="mini" id="adaptiveUpdateText">--</div></div>
+      <div class="card"><div class="card-title">Adaptive Thresholds</div><div class="big" id="thresholdValue">--</div><div class="sub" id="failureThresholdValue">Failure: --</div><div class="mini" id="thresholdModeText">--</div><div class="mini" id="adaptiveHistoryText">--</div></div>
+    </div>
+  </div>
+</section>
+
+<!-- ══════════ PRESCRIPTION ══════════ -->
+<section class="page" id="prescriptionPage">
+  <div class="head"><div><h2>Maintenance Prescription</h2><p>Recommended actions derived from transformer-specific anomaly analysis</p></div></div>
+  <div class="rx-split" style="flex:1;overflow:hidden">
+    <div class="card" style="overflow-y:auto">
+      <div class="card-title">Prescription</div>
+      <div class="rx-title" id="prescriptionTitle">Waiting for prescription…</div>
+      <div class="pill" id="prescriptionType">--</div>
+      <ul class="actions" id="prescriptionActions"><li>Waiting for live analysis…</li></ul>
+      <div class="reason" id="prescriptionReason">The explanation will appear here once live data is received.</div>
+    </div>
+    <div class="decision">
+      <div class="card"><div class="card-title">Urgency</div><div class="big" id="urgencyValue2">--</div><div class="sub">Maintenance urgency level</div></div>
+      <div class="card"><div class="card-title">Auto Action</div><div class="big" id="autoAction2" style="font-size:14px">--</div><div class="sub">Recommended automatic action</div></div>
+      <div class="card"><div class="card-title">Main Cause</div><div class="big" id="mainCause2">--</div><div class="sub" id="dominantStateText2">--</div></div>
+      <div class="card"><div class="card-title">Priority Score</div><div class="big" id="mpsValue2">--</div><div class="sub">Out of 100</div></div>
+      <div class="card"><div class="card-title">Operating Region</div><div class="big" id="operatingRegion2" style="font-size:13px">--</div><div class="sub" id="prescriptionContext2">--</div></div>
+      <div class="card"><div class="card-title">RUL Range</div><div class="big" id="rulRange">--</div><div class="sub" id="confidenceValue">Confidence: --</div></div>
+    </div>
+  </div>
+</section>
+
+<!-- ══════════ CONTRIBUTION ══════════ -->
+<section class="page" id="contributionPage">
+  <div class="head"><div><h2>Sensor Contribution to Anomaly</h2><p>Which sensor is driving the abnormal reconstruction error</p></div></div>
+  <div class="contrib-wrap">
+    <div class="card" style="display:flex;flex-direction:column;justify-content:center">
+      <div class="card-title">Contribution Breakdown</div>
+      <div class="crow"><div class="chead"><span>Current</span><span id="ctCurrent">0%</span></div><div class="pwrap"><div class="pfill pf-current" id="cbCurrent"></div></div></div>
+      <div class="crow"><div class="chead"><span>Oil Temperature</span><span id="ctOilTemp">0%</span></div><div class="pwrap"><div class="pfill pf-oil-temp" id="cbOilTemp"></div></div></div>
+      <div class="crow"><div class="chead"><span>Winding Temperature</span><span id="ctWindingTemp">0%</span></div><div class="pwrap"><div class="pfill pf-winding-temp" id="cbWindingTemp"></div></div></div>
+      <div class="crow"><div class="chead"><span>Vibration</span><span id="ctVibration">0%</span></div><div class="pwrap"><div class="pfill pf-vibration" id="cbVibration"></div></div></div>
+      <div class="crow"><div class="chead"><span>Oil Level</span><span id="ctOilLevel">0%</span></div><div class="pwrap"><div class="pfill pf-oil-level" id="cbOilLevel"></div></div></div>
+      <div class="mini" style="margin-top:10px">Contribution shows how much each sensor deviates from the learned normal pattern. The dominant contributor drives the prescription.</div>
+    </div>
+    <div class="contrib-summary">
+      <div class="card"><div class="card-title">Main Cause</div><div class="big" id="mainCause3">--</div><div class="sub">Dominant contributor</div></div>
+      <div class="card"><div class="card-title">Reconstruction Error</div><div class="big" id="reconError2">--</div><div class="sub" id="smoothedError2">Smoothed: --</div></div>
+      <div class="card"><div class="card-title">Active Threshold</div><div class="big" id="thresholdValue2">--</div><div class="sub" id="failureThresholdValue2">Failure: --</div></div>
+      <div class="card"><div class="card-title">Operating Region</div><div class="big" id="operatingRegion3" style="font-size:13px">--</div><div class="sub" id="prescriptionContext3">--</div></div>
+      <div class="card"><div class="card-title">OOD Score</div><div class="big" id="oodScore">--</div><div class="sub" id="oodFeature">Out-of-distribution indicator</div></div>
+      <div class="card"><div class="card-title">Confidence</div><div class="big" id="confidenceValue2">--</div><div class="sub" id="uncertaintyReason2">--</div></div>
+    </div>
+  </div>
+</section>
+
+<!-- ══════════ STATES ══════════ -->
+<section class="page" id="statesPage">
+  <div class="head"><div><h2>Sensor States & Confidence</h2><p>Per-sensor state classification against learned normal operating bands</p></div></div>
+  <div class="states-wrap">
+    <div class="states-row">
+      <div class="card"><div class="card-title">Current State</div><div class="big" id="stCurrent">--</div><div class="sub" id="stCurrentDetail">--</div></div>
+      <div class="card"><div class="card-title">Oil Temp State</div><div class="big" id="stOilTemp">--</div><div class="sub" id="stOilTempDetail">--</div></div>
+      <div class="card"><div class="card-title">Winding Temp State</div><div class="big" id="stWindingTemp">--</div><div class="sub" id="stWindingTempDetail">--</div></div>
+      <div class="card"><div class="card-title">Vibration State</div><div class="big" id="stVibration">--</div><div class="sub" id="stVibrationDetail">--</div></div>
+      <div class="card"><div class="card-title">Oil Level State</div><div class="big" id="stOilLevel">--</div><div class="sub" id="stOilLevelDetail">--</div></div>
+    </div>
+    <div class="action-row">
+      <div class="card"><div class="card-title">Confidence</div><div class="big" id="confidenceValue3">--</div><div class="sub" id="uncertaintyReason3">--</div></div>
+      <div class="card"><div class="card-title">Auto Action</div><div class="big" id="autoAction3" style="font-size:16px">--</div><div class="sub" id="lastUpdatedMain">--</div></div>
+      <div class="card"><div class="card-title">Latest Values Summary</div><div class="sub" id="latestSummary">--</div><div class="mini" id="stateSummary">--</div></div>
+    </div>
+  </div>
+</section>
+
+<!-- ══════════ TELEMETRY ══════════ -->
+<section class="page" id="telemPage">
+  <div class="head"><div><h2>Operational Telemetry</h2><p>Power quality and hardware fault flags — available for future model expansion</p></div></div>
+  <div class="telem-wrap">
+    <div class="card">
+      <div class="card-title">Power Measurements</div>
+      <div class="telem-grid">
+        <div><div class="card-title">Voltage</div><div class="big" id="tVoltage">-- V</div></div>
+        <div><div class="card-title">Real Power</div><div class="big" id="tRealPower">-- W</div></div>
+        <div><div class="card-title">Apparent Power</div><div class="big" id="tApparentPower">-- VA</div></div>
+        <div><div class="card-title">Reactive Power</div><div class="big" id="tReactivePower">-- VAR</div></div>
+        <div><div class="card-title">Power Factor</div><div class="big" id="tPowerFactor">--</div></div>
+        <div><div class="card-title">Load Current</div><div class="big" id="tCurrent2">-- A</div></div>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-title">Hardware Fault Flags</div>
+      <div class="mini" style="margin-bottom:14px">Raw fault signals from ESP32 sensor hardware. These are independent of the ML model and represent direct hardware-level detection.</div>
+      <div class="fault-row">
+        <div class="fault-badge" id="fTempFault">TEMP FAULT<br>--</div>
+        <div class="fault-badge" id="fOilTempFault">OIL TEMP FAULT<br>--</div>
+        <div class="fault-badge" id="fVoltageFault">VOLTAGE FAULT<br>--</div>
+      </div>
+      <div class="sub" style="margin-top:16px">Note: These fault flags are displayed for completeness and situational awareness. They are not used as ML model inputs — the model infers fault conditions from learned patterns in the 5 core sensor signals.</div>
+    </div>
+  </div>
+</section>
+
+</main>
+</div>
+
+<script>
+// ── FIREBASE CONFIG — replace with your actual config ──
+const firebaseConfig = {
+  apiKey:            "AIzaSyDUVDXompxEaHxq_XQa8dunQmR_-3IExcQ",
+  authDomain:        "transformer-db.firebaseapp.com",
+  databaseURL:       "https://transformer-db-default-rtdb.firebaseio.com",
+  projectId:         "transformer-db",
+  storageBucket:     "transformer-db.firebasestorage.app",
+  messagingSenderId: "322028161520",
+  appId:             "1:322028161520:web:1887139ba1211e0cb93535"
+};
+
+const FIREBASE_PATH = "/transformer_monitor/latest";
+firebase.initializeApp(firebaseConfig);
+const db = firebase.database();
+
+// ── NAV ──
+document.querySelectorAll(".nav button").forEach(b => b.addEventListener("click", () => {
+  document.querySelectorAll(".nav button").forEach(x => x.classList.remove("active"));
+  document.querySelectorAll(".page").forEach(x => x.classList.remove("active"));
+  b.classList.add("active");
+  document.getElementById(b.dataset.page).classList.add("active");
+  setTimeout(() => Object.values(charts).forEach(c => c && c.resize()), 80);
+}));
+
+// ── CHARTS ──
+const MAX_PTS = 30;
+const chartLabels = [];
+const chartSeries = { current: [], oil_temp: [], winding_temp: [], vibration: [], oil_level: [] };
+
+function mkChart(id, label, border, bg) {
+  return new Chart(document.getElementById(id).getContext("2d"), {
+    type: "line",
+    data: { labels: chartLabels, datasets: [{ label, data: [], borderColor: border, backgroundColor: bg, borderWidth: 2, tension: .35, fill: true, pointRadius: 2, pointHoverRadius: 4 }] },
+    options: {
+      responsive: true, maintainAspectRatio: false, animation: false,
+      plugins: { legend: { labels: { color: "#e5e7eb", font: { size: 10 } } } },
+      scales: {
+        x: { ticks: { color: "#64748b", maxRotation: 0, autoSkip: true, maxTicksLimit: 4 }, grid: { color: "#1a2640" } },
+        y: { ticks: { color: "#64748b" }, grid: { color: "#1a2640" } }
+      }
+    }
+  });
+}
+
+const charts = {
+  current:      mkChart("chartCurrent",     "Current (A)",       "#38bdf8", "rgba(56,189,248,.10)"),
+  oil_temp:     mkChart("chartOilTemp",     "Oil Temp (°C)",     "#f97316", "rgba(249,115,22,.10)"),
+  winding_temp: mkChart("chartWindingTemp", "Winding Temp (°C)", "#f43f5e", "rgba(244,63,94,.10)"),
+  vibration:    mkChart("chartVibration",   "Vibration",         "#a855f7", "rgba(168,85,247,.10)"),
+  oil_level:    mkChart("chartOilLevel",    "Oil Level (%)",     "#22c55e", "rgba(34,197,94,.10)"),
+};
+
+function pushChartPoint(values) {
+  const t = new Date().toLocaleTimeString();
+  chartLabels.push(t);
+  Object.keys(chartSeries).forEach(k => chartSeries[k].push(values[k] ?? null));
+  if (chartLabels.length > MAX_PTS) {
+    chartLabels.shift();
+    Object.keys(chartSeries).forEach(k => chartSeries[k].shift());
+  }
+  Object.entries(charts).forEach(([k, c]) => {
+    c.data.labels = [...chartLabels];
+    c.data.datasets[0].data = [...chartSeries[k]];
+    c.update();
+  });
+}
+
+// ── HELPERS ──
+const el  = id => document.getElementById(id);
+const set = (id, v) => { const e = el(id); if (e) e.textContent = v; };
+const setHTML = (id, v) => { const e = el(id); if (e) e.innerHTML = v; };
+const setClass = (id, cls) => { const e = el(id); if (e) e.className = "big " + cls; };
+const fmt  = t => t ? new Date(t * 1000).toLocaleString() : "--";
+const pretty = s => s ? String(s).replaceAll("_", " ") : "--";
+const urgCls = u => {
+  u = (u || "").toUpperCase();
+  return { NORMAL:"normal", WARNING:"warning", PLAN_MAINTENANCE:"plan", URGENT:"urgent", CRITICAL:"critical", WARMING_UP:"warm" }[u] || "";
+};
+const stateCls = s => ({ LOW:"low", NORMAL:"normal", HIGH:"high" })[(s||"").toUpperCase()] || "";
+const stateDesc = (name, s) => ({
+  LOW:    `${name} is below the learned normal band`,
+  NORMAL: `${name} is within the learned normal band`,
+  HIGH:   `${name} is above the learned normal band`,
+}[(s||"").toUpperCase()] || "State unavailable");
+
+// ── MAIN UPDATE ──
+function updateDashboard(data) {
+  if (!data) return;
+
+  const lv   = data.latest_values || {};
+  const curr = Number(lv.current      ?? data.current      ?? 0);
+  const oilT = Number(lv.oil_temp     ?? data.oil_temp     ?? 0);
+  const winT = Number(lv.winding_temp ?? data.winding_temp ?? 0);
+  const vib  = Number(lv.vibration    ?? data.vibration    ?? 0);
+  const oil  = Number(lv.oil_level    ?? data.oil_level    ?? 0);
+
+  const health  = Number(data.health  ?? 0);
+  const rul     = Number(data.rul_hours ?? data.rul ?? 0);
+  const rulMin  = Number(data.rul_min ?? 0);
+  const rulMax  = Number(data.rul_max ?? 0);
+  const mps     = Number(data.maintenance_priority_score ?? 0);
+  const urgency = data.urgency_level || "--";
+  const mainCause = data.main_cause || "--";
+  const anomaly   = Boolean(data.is_anomaly);
+  const autoAction = data.auto_action || "--";
+  const ts = fmt(data.analysis_timestamp);
+
+  // connection badge
+  const badge = el("connectionBadge");
+  badge.textContent = "Live · " + ts;
+  badge.className = "badge live";
+  set("lastUpdatedSide", ts);
+
+  // sensor displays
+  set("vCurrent",     curr.toFixed(2) + " A");
+  set("vOilTemp",     oilT.toFixed(1) + " °C");
+  set("vWindingTemp", winT.toFixed(1) + " °C");
+  set("vVibration",   vib.toFixed(4));
+  set("vOilLevel",    oil.toFixed(1)  + " %");
+  set("sCurrent",     "State: " + pretty(data.current_state));
+  set("sOilTemp",     "State: " + pretty(data.oil_temp_state));
+  set("sWindingTemp", "State: " + pretty(data.winding_temp_state));
+  set("sVibration",   "State: " + pretty(data.vibration_state));
+  set("sOilLevel",    "State: " + pretty(data.oil_level_state));
+
+  // health
+  set("healthValue", health.toFixed(1) + "%");
+  el("healthBar").style.width = Math.max(0, Math.min(100, health)) + "%";
+  set("healthText", health >= 80 ? "Healthy" : health >= 60 ? "Slight degradation" : health >= 40 ? "Moderate degradation" : health >= 20 ? "Poor condition" : "Critical condition");
+
+  // RUL
+  set("rulValue", rul.toFixed(1) + " h");
+  set("rulState", pretty(data.rul_state));
+  set("rulRange", `${rulMin.toFixed(0)} – ${rulMax.toFixed(0)} h`);
+
+  // MPS + urgency
+  set("mpsValue",  mps.toFixed(1));
+  set("mpsValue2", mps.toFixed(1));
+  const uCls = urgCls(urgency);
+  set("urgencyValue",  pretty(urgency));
+  set("urgencyValue2", pretty(urgency));
+  el("urgencyValue").className  = "sub " + uCls;
+  el("urgencyValue2").className = "big " + uCls;
+
+  // system status
+  const ss = el("systemStatus");
+  ss.className = "big " + uCls;
+  ss.textContent = anomaly ? pretty(urgency) : "NORMAL";
+  set("systemStatusText", anomaly ? "Anomaly detected — see prescription" : "No anomaly detected");
+
+  // main cause
+  [1,2,3].forEach(i => set("mainCause" + (i===1?"":i), mainCause.replace(/_/g," ").toUpperCase()));
+  set("dominantStateText",  "Dominant state: " + pretty(data.dominant_state));
+  set("dominantStateText2", "Dominant state: " + pretty(data.dominant_state));
+
+  // operating region
+  set("operatingRegion",  pretty(data.operating_region));
+  set("operatingRegion2", pretty(data.operating_region));
+  set("operatingRegion3", pretty(data.operating_region));
+  set("prescriptionContext",  data.prescription_context || "--");
+  set("prescriptionContext2", data.prescription_context || "--");
+  set("prescriptionContext3", data.prescription_context || "--");
+
+  // prescription
+  set("prescriptionTitle", data.prescription_title || "--");
+  set("prescriptionType",  data.prescription_category_label || "--");
+  const acts = Array.isArray(data.prescription_actions) ? data.prescription_actions : [];
+  setHTML("prescriptionActions", acts.length ? acts.map(a => `<li>${a}</li>`).join("") : "<li>--</li>");
+  set("prescriptionReason", data.prescription_reason || "--");
+  set("autoAction2", pretty(autoAction));
+  set("autoAction3", pretty(autoAction));
+
+  // contribution bars
+  const contrib = data.sensor_contributions || {};
+  const cPairs = [
+    ["current",      "ctCurrent",     "cbCurrent"],
+    ["oil_temp",     "ctOilTemp",     "cbOilTemp"],
+    ["winding_temp", "ctWindingTemp", "cbWindingTemp"],
+    ["vibration",    "ctVibration",   "cbVibration"],
+    ["oil_level",    "ctOilLevel",    "cbOilLevel"],
+  ];
+  cPairs.forEach(([key, txtId, barId]) => {
+    const v = Number(contrib[key] ?? 0);
+    set(txtId, v.toFixed(1) + "%");
+    el(barId).style.width = Math.max(0, Math.min(100, v)) + "%";
+  });
+
+  // reconstruction error / thresholds
+  const re = Number(data.reconstruction_error ?? -1);
+  const se = Number(data.smoothed_error       ?? -1);
+  const at = Number(data.adaptive_threshold   ?? data.threshold ?? 0);
+  const ft = Number(data.failure_threshold    ?? 0);
+  set("reconError",            re < 0 ? "N/A" : re.toFixed(6));
+  set("reconError2",           re < 0 ? "N/A" : re.toFixed(6));
+  set("smoothedError",         "Smoothed: "  + (se < 0 ? "N/A" : se.toFixed(6)));
+  set("smoothedError2",        "Smoothed: "  + (se < 0 ? "N/A" : se.toFixed(6)));
+  set("thresholdValue",        at.toFixed(6));
+  set("thresholdValue2",       at.toFixed(6));
+  set("failureThresholdValue", "Failure: " + ft.toFixed(6));
+  set("failureThresholdValue2","Failure: " + ft.toFixed(6));
+  set("thresholdModeText",     "Mode: " + pretty(data.threshold_mode));
+  set("adaptiveHistoryText",   "Adaptive history: " + (data.adaptive_history_count ?? 0) + " pts");
+  set("trendValue",            Number(data.degradation_rate ?? 0).toFixed(6));
+  set("persistenceValue",      "Persistence: " + (Number(data.persistence_factor ?? 0) * 100).toFixed(1) + "%");
+  set("adaptiveUpdateText",    "Adaptive update: " + pretty(data.adaptive_update_reason));
+
+  // OOD
+  const ood = data.ood_score != null ? Number(data.ood_score).toFixed(4) : "N/A";
+  set("oodScore", ood);
+  const oodDir = data.ood_direction_details || {};
+  set("oodFeature", "Per sensor: " + Object.entries(oodDir).map(([k,v]) => k.replace(/_/g," ") + "=" + v).join(", "));
+
+  // confidence
+  const cl  = data.confidence_level  || "--";
+  const cs  = Number(data.confidence_score ?? 0);
+  const confStr = cl.toUpperCase() + " (" + cs.toFixed(1) + "%)";
+  set("confidenceValue",  confStr);
+  set("confidenceValue2", confStr);
+  set("confidenceValue3", confStr);
+  const ur = data.uncertainty_reason || "--";
+  set("uncertaintyReason2", ur);
+  set("uncertaintyReason3", ur);
+
+  // sensor states page
+  const statePairs = [
+    ["current",      "stCurrent",     "stCurrentDetail"],
+    ["oil_temp",     "stOilTemp",     "stOilTempDetail"],
+    ["winding_temp", "stWindingTemp", "stWindingTempDetail"],
+    ["vibration",    "stVibration",   "stVibrationDetail"],
+    ["oil_level",    "stOilLevel",    "stOilLevelDetail"],
+  ];
+  const stateMap = {
+    current:      data.current_state,
+    oil_temp:     data.oil_temp_state,
+    winding_temp: data.winding_temp_state,
+    vibration:    data.vibration_state,
+    oil_level:    data.oil_level_state,
+  };
+  statePairs.forEach(([key, valId, detId]) => {
+    const s = stateMap[key] || "NORMAL";
+    set(valId, pretty(s));
+    setClass(valId, stateCls(s));
+    set(detId, stateDesc(key.replace(/_/g," "), s));
+  });
+
+  set("latestSummary",
+    `Current: ${curr.toFixed(2)} A | Oil T: ${oilT.toFixed(1)}°C | Wind T: ${winT.toFixed(1)}°C | Vib: ${vib.toFixed(3)} | Oil Lvl: ${oil.toFixed(1)}%`);
+  set("stateSummary",
+    `Current: ${pretty(stateMap.current)} | Oil Temp: ${pretty(stateMap.oil_temp)} | Winding Temp: ${pretty(stateMap.winding_temp)} | Vibration: ${pretty(stateMap.vibration)} | Oil Level: ${pretty(stateMap.oil_level)}`);
+  set("lastUpdatedMain", "Last update: " + ts);
+
+  // telemetry page — raw ESP32 fields
+  set("tVoltage",        (data.voltage       != null ? Number(data.voltage).toFixed(1)        + " V"   : "--"));
+  set("tRealPower",      (data.real_power     != null ? Number(data.real_power).toFixed(1)     + " W"   : "--"));
+  set("tApparentPower",  (data.apparent_power != null ? Number(data.apparent_power).toFixed(1) + " VA"  : "--"));
+  set("tReactivePower",  (data.reactive_power != null ? Number(data.reactive_power).toFixed(1) + " VAR" : "--"));
+  set("tPowerFactor",    (data.power_factor   != null ? Number(data.power_factor).toFixed(3)             : "--"));
+  set("tCurrent2",       curr.toFixed(2) + " A");
+
+  // fault flags
+  [["fTempFault", data.temp_fault, "TEMP FAULT"], ["fOilTempFault", data.oil_temp_fault, "OIL TEMP FAULT"], ["fVoltageFault", data.voltage_fault, "VOLTAGE FAULT"]].forEach(([id, val, label]) => {
+    const e = el(id);
+    const isOk = !val || val === false || val === 0 || val === "0" || val === "false";
+    e.innerHTML = label + "<br>" + (isOk ? "OK" : "FAULT");
+    e.className = "fault-badge " + (isOk ? "fault-ok" : "fault-err");
+  });
+
+  pushChartPoint({ current: curr, oil_temp: oilT, winding_temp: winT, vibration: vib, oil_level: oil });
+}
+
+function showDisconnected() {
+  const badge = el("connectionBadge");
+  badge.textContent = "No live data";
+  badge.className = "badge off";
+}
+
+db.ref(FIREBASE_PATH).on("value", snap => {
+  const data = snap.val();
+  if (data) updateDashboard(data);
+  else showDisconnected();
+}, err => {
+  console.error("Firebase read error:", err);
+  showDisconnected();
+});
+</script>
+</body>
+</html>
