@@ -18,10 +18,7 @@ try:
 except ImportError:
     FIREBASE_AVAILABLE = False
 
-try:
-    from tensorflow.keras.models import load_model
-except Exception:
-    from keras.models import load_model
+from keras.models import load_model
 
 app = Flask(__name__)
 
