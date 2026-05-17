@@ -1,6 +1,6 @@
 flask==3.0.3
 numpy==1.24.3
 joblib==1.4.2
-tensorflow-cpu==2.13.0
+tensorflow-cpu
 firebase-admin==6.5.0
 gunicorn==22.0.0
