@@ -1,7 +1,6 @@
 flask==3.0.3
-numpy==2.0.0
+numpy==1.26.4
 joblib==1.4.2
-keras==3.14.0
-tensorflow-cpu==2.19.0
+tflite-runtime==2.14.0
 firebase-admin==6.5.0
 gunicorn==22.0.0
