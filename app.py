@@ -18,7 +18,7 @@ try:
 except ImportError:
     FIREBASE_AVAILABLE = False
 
-from keras.models import load_model
+import tflite_runtime.interpreter as tflite
 
 app = Flask(__name__)
 
@@ -39,7 +39,7 @@ def add_cors(response):
 # ============================================================
 # FILE PATHS
 # ============================================================
-MODEL_PATH     = os.getenv("MODEL_PATH",     "lstm_autoencoder.keras")
+MODEL_PATH     = os.getenv("MODEL_PATH",     "lstm_autoencoder.tflite")
 SCALER_PATH    = os.getenv("SCALER_PATH",    "scaler.save")
 THRESHOLD_PATH = os.getenv("THRESHOLD_PATH", "threshold.npy")
 
@@ -1001,7 +1001,8 @@ def load_all():
         if not os.path.exists(path):
             raise FileNotFoundError(f"{label} file not found: {path}")
     print("Loading model...")
-    model_local = load_model(MODEL_PATH, compile=False)
+    model_local = tflite.Interpreter(model_path=MODEL_PATH)
+    model_local.allocate_tensors()
     print("Loading scaler...")
     scaler_local = joblib.load(SCALER_PATH)
     print("Loading threshold...")
@@ -1066,7 +1067,11 @@ def batch_predict():
         raw_window    = np.array(readings, dtype=np.float32)
         scaled_window = scaler.transform(raw_window)
         x_input       = np.expand_dims(scaled_window, axis=0)
-        x_pred        = model(x_input, training=False).numpy()
+        input_details  = model.get_input_details()
+        output_details = model.get_output_details()
+        model.set_tensor(input_details[0]['index'], x_input)
+        model.invoke()
+        x_pred         = model.get_tensor(output_details[0]['index'])
 
         base_threshold       = float(threshold)
         adaptive_threshold, adaptive_ready = compute_adaptive_threshold(base_threshold, adaptive_healthy_error_history)
