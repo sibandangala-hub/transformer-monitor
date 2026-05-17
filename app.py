@@ -7,6 +7,10 @@ from collections import deque
 import numpy as np
 import joblib
 
+os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"
+os.environ["TF_NUM_INTEROP_THREADS"] = "1"
+os.environ["TF_NUM_INTRAOP_THREADS"] = "1"
+
 try:
     import firebase_admin
     from firebase_admin import credentials, db as rtdb
@@ -1156,7 +1160,9 @@ def batch_predict():
         traceback.print_exc()
         return jsonify({"error": "Internal server error", "details": str(e)}), 500
 
+# Called by gunicorn on module import AND by direct run
+init_firebase()
+
 if __name__ == "__main__":
-    init_firebase()
     port = int(os.getenv("PORT", "10000"))
     app.run(host="0.0.0.0", port=port)
