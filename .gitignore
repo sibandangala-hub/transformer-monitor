@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+.env
+*.save
+*.npy
+*.keras
+firebase-credentials.json

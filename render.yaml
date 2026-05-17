@@ -1,0 +1,15 @@
+services:
+  - type: web
+    name: transformer-monitor
+    env: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn app:app --workers 1 --timeout 120
+    envVars:
+      - key: FIREBASE_DB_URL
+        value: https://transformer-db-default-rtdb.firebaseio.com/
+      - key: FIREBASE_CREDENTIALS_JSON
+        sync: false          # you'll paste this manually in Render dashboard
+      - key: SAMPLE_INTERVAL_SECONDS
+        value: "10"
+      - key: PORT
+        value: "5000"
