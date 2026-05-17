@@ -1161,7 +1161,9 @@ def batch_predict():
         return jsonify({"error": "Internal server error", "details": str(e)}), 500
 
 # Called by gunicorn on module import AND by direct run
+# Called by gunicorn on module import AND by direct run
 init_firebase()
+ensure_loaded()  # pre-load model before first health check hits
 
 if __name__ == "__main__":
     port = int(os.getenv("PORT", "10000"))
