@@ -4,7 +4,7 @@ services:
     env: python
     pythonVersion: "3.11.0"
     buildCommand: pip install -r requirements.txt
-    startCommand: gunicorn app:app --workers 1 --timeout 300 --preload
+    startCommand: gunicorn app:app --workers 1 --timeout 300 --preload --bind 0.0.0.0:10000
     envVars:
       - key: FIREBASE_DB_URL
         sync: false
