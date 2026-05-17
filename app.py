@@ -18,7 +18,7 @@ try:
 except ImportError:
     FIREBASE_AVAILABLE = False
 
-from keras.models import load_model
+import tflite_runtime.interpreter as tflite
 
 app = Flask(__name__)
 
