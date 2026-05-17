@@ -2,10 +2,11 @@ services:
   - type: web
     name: transformer-monitor
     env: python
-    pythonVersion: "3.11.0"
-    buildCommand: pip install -r requirements.txt
-    startCommand: gunicorn app:app --workers 1 --timeout 120
+    buildCommand: pip install --upgrade pip setuptools wheel && pip install -r requirements.txt
+    startCommand: gunicorn app:app --workers 1 --timeout 120 --bind 0.0.0.0:10000
     envVars:
+      - key: PYTHON_VERSION
+        value: "3.11.9"
       - key: FIREBASE_DB_URL
         sync: false
       - key: FIREBASE_CREDENTIALS_JSON
@@ -13,4 +14,4 @@ services:
       - key: SAMPLE_INTERVAL_SECONDS
         value: "10"
       - key: PORT
-        value: "5000"
+        value: "10000"
