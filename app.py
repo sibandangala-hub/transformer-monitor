@@ -1,5 +1,4 @@
 from flask import Flask, request, jsonify, send_from_directory
-
 import os
 import time
 import traceback
@@ -20,21 +19,21 @@ try:
 except Exception:
     from keras.models import load_model
 
-from flask import send_from_directory
+app = Flask(__name__)
 
-# Serve dashboard
 @app.route("/dashboard")
 def dashboard():
     return send_from_directory("dashboard", "index.html")
 
-# CORS for ESP32
 @app.after_request
 def add_cors(response):
     response.headers["Access-Control-Allow-Origin"] = "*"
     response.headers["Access-Control-Allow-Headers"] = "Content-Type"
     return response
 
-app = Flask(__name__)
+# ============================================================
+# FILE PATHS
+# ============================================================
 
 # ============================================================
 # FILE PATHS
