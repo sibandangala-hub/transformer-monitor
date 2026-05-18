@@ -1001,7 +1001,8 @@ def load_all():
         if not os.path.exists(path):
             raise FileNotFoundError(f"{label} file not found: {path}")
     print("Loading model...")
-    model_local = load_model(MODEL_PATH, compile=False)
+    model_local = tflite.Interpreter(model_path=MODEL_PATH)
+    model_local.allocate_tensors()
     print("Loading scaler...")
     scaler_local = joblib.load(SCALER_PATH)
     print("Loading threshold...")
