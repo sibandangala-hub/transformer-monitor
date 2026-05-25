@@ -56,8 +56,8 @@ FEATURE_INDEX = {name: i for i, name in enumerate(FEATURE_NAMES)}
 # HEALTH / RUL SETTINGS
 # ============================================================
 ERROR_HISTORY_SIZE   = 30
-MIN_RUL_POINTS       = 8
-EMA_ALPHA            = 0.2
+MIN_RUL_POINTS       = 6
+EMA_ALPHA            = 0.35
 FAILURE_MULTIPLIER   = 5.0
 MAX_RUL_HOURS        = 100.0
 SAMPLE_INTERVAL_SECONDS = float(os.getenv("SAMPLE_INTERVAL_SECONDS", "10"))
@@ -87,7 +87,7 @@ ADAPTIVE_MAX_OOD_FOR_UPDATE   = float(os.getenv("ADAPTIVE_MAX_OOD_FOR_UPDATE","0
 # PRESCRIPTIVE LAYER SETTINGS
 # ============================================================
 DOMINANT_CONTRIBUTION_THRESHOLD = float(os.getenv("DOMINANT_CONTRIBUTION_THRESHOLD", "40.0"))
-PERSISTENCE_LOOKBACK            = int(os.getenv("PERSISTENCE_LOOKBACK",              "8"))
+PERSISTENCE_LOOKBACK            = int(os.getenv("PERSISTENCE_LOOKBACK",              "5"))
 OPERATING_BAND_MARGIN_RATIO     = float(os.getenv("OPERATING_BAND_MARGIN_RATIO",     "0.05"))
 WARMUP_TEMP_MARGIN_RATIO        = float(os.getenv("WARMUP_TEMP_MARGIN_RATIO",        "0.03"))
 
