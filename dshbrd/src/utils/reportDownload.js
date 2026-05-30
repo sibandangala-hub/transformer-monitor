@@ -1,0 +1,106 @@
+import { fmt, pretty } from './statusHelpers';
+
+export function downloadReport(d) {
+  if (!d) { alert('No data yet. Wait for live data.'); return; }
+  const ts   = fmt(d.analysis_timestamp);
+  const lv   = d.latest_values || {};
+  const sc   = d.sensor_contributions || {};
+  const acts = Array.isArray(d.prescription_actions)
+    ? d.prescription_actions.map((a, i) => `  ${i + 1}. ${a}`).join('\n')
+    : '  None';
+
+  const report = `
+================================================================================
+         TRANSFORMER HEALTH MONITOR — MAINTENANCE REPORT
+================================================================================
+Generated   : ${new Date().toLocaleString()}
+Analysis At : ${ts}
+================================================================================
+
+SYSTEM STATUS
+─────────────────────────────────────────────────────────────────────────────
+  Status          : ${d.is_anomaly ? (d.urgency_level || 'ANOMALY') : 'NORMAL'}
+  Health Index    : ${Number(d.health || 0).toFixed(1)}%
+  RUL Estimate    : ${Number(d.rul_hours || 0).toFixed(1)} h (${d.rul_state || '--'})
+  RUL Range       : ${Number(d.rul_min || 0).toFixed(0)} – ${Number(d.rul_max || 0).toFixed(0)} h
+  Priority Score  : ${Number(d.maintenance_priority_score || 0).toFixed(1)} / 100
+  Urgency Level   : ${d.urgency_level || '--'}
+  Main Cause      : ${(d.main_cause || '--').replace(/_/g, ' ').toUpperCase()}
+  Operating Region: ${d.operating_region || '--'}
+  LED Status      : ${d.led_status || '--'}
+
+SENSOR READINGS
+─────────────────────────────────────────────────────────────────────────────
+  Current         : ${Number(lv.current || 0).toFixed(4)} A    [${d.current_state || '--'}]
+  Oil Temperature : ${Number(lv.oil_temp || 0).toFixed(4)} °C  [${d.oil_temp_state || '--'}]
+  Winding Temp    : ${Number(lv.winding_temp || 0).toFixed(4)} °C  [${d.winding_temp_state || '--'}]
+  Vibration       : ${Number(lv.vibration || 0).toFixed(4)}    [${d.vibration_state || '--'}]
+  Oil Level       : ${Number(lv.oil_level || 0).toFixed(4)} %  [${d.oil_level_state || '--'}]
+
+SENSOR CONTRIBUTION TO ANOMALY
+─────────────────────────────────────────────────────────────────────────────
+  Current         : ${Number(sc.current || 0).toFixed(1)}%
+  Oil Temperature : ${Number(sc.oil_temp || 0).toFixed(1)}%
+  Winding Temp    : ${Number(sc.winding_temp || 0).toFixed(1)}%
+  Vibration       : ${Number(sc.vibration || 0).toFixed(1)}%
+  Oil Level       : ${Number(sc.oil_level || 0).toFixed(1)}%
+
+RECONSTRUCTION & THRESHOLD ANALYSIS
+─────────────────────────────────────────────────────────────────────────────
+  Reconstruction Error  : ${Number(d.reconstruction_error || 0).toFixed(6)}
+  Smoothed Error (EMA)  : ${Number(d.smoothed_error || 0).toFixed(6)}
+  Base Threshold        : ${Number(d.base_threshold || 0).toFixed(6)}
+  Adaptive Threshold    : ${Number(d.adaptive_threshold || 0).toFixed(6)}
+  Failure Threshold     : ${Number(d.failure_threshold || 0).toFixed(6)}
+  Threshold Mode        : ${d.threshold_mode || '--'}
+  Adaptive History      : ${d.adaptive_history_count || 0} pts
+  Degradation Rate      : ${d.degradation_rate != null ? Number(d.degradation_rate).toFixed(6) : '--'}
+  Persistence           : ${(Number(d.persistence_factor || 0) * 100).toFixed(1)}%
+
+CONFIDENCE & OOD
+─────────────────────────────────────────────────────────────────────────────
+  Confidence Level  : ${d.confidence_level || '--'} (${Number(d.confidence_score || 0).toFixed(1)}%)
+  OOD Score         : ${d.ood_score != null ? Number(d.ood_score).toFixed(6) : 'N/A'}
+  Uncertainty Reason: ${d.uncertainty_reason || '--'}
+
+MAINTENANCE PRESCRIPTION
+─────────────────────────────────────────────────────────────────────────────
+  Title         : ${d.prescription_title || '--'}
+  Category      : ${d.prescription_category_label || '--'}
+  Auto Action   : ${d.auto_action || '--'}
+  Context       : ${d.prescription_context || '--'}
+
+  Recommended Actions:
+${acts}
+
+  Reason:
+  ${d.prescription_reason || '--'}
+
+POWER MEASUREMENTS
+─────────────────────────────────────────────────────────────────────────────
+  Voltage         : ${d.voltage != null ? Number(d.voltage).toFixed(1) + ' V' : '--'}
+  Real Power      : ${d.real_power != null ? Number(d.real_power).toFixed(1) + ' W' : '--'}
+  Apparent Power  : ${d.apparent_power != null ? Number(d.apparent_power).toFixed(1) + ' VA' : '--'}
+  Reactive Power  : ${d.reactive_power != null ? Number(d.reactive_power).toFixed(1) + ' VAR' : '--'}
+  Power Factor    : ${d.power_factor != null ? Number(d.power_factor).toFixed(3) : '--'}
+
+HARDWARE FAULT FLAGS
+─────────────────────────────────────────────────────────────────────────────
+  Temp Fault      : ${d.temp_fault ? 'FAULT' : 'OK'}
+  Oil Temp Fault  : ${d.oil_temp_fault ? 'FAULT' : 'OK'}
+  Voltage Fault   : ${d.voltage_fault ? 'FAULT' : 'OK'}
+
+================================================================================
+  Report generated by Transformer Health Monitor
+  LSTM Autoencoder · Anomaly Detection · Prescriptive Maintenance
+================================================================================
+`.trim();
+
+  const blob = new Blob([report], { type: 'text/plain' });
+  const url  = URL.createObjectURL(blob);
+  const a    = document.createElement('a');
+  a.href     = url;
+  a.download = `transformer_report_${new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-')}.txt`;
+  a.click();
+  URL.revokeObjectURL(url);
+}
