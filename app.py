@@ -459,6 +459,54 @@ def write_to_firebase(payload: dict):
     except Exception as e:
         print(f"Firebase write error: {e}")
 
+def save_history_to_firebase():
+    if firebase_ref is None:
+        return
+    try:
+        history_ref = rtdb.reference("/transformer_monitor/scorer_state")
+        history_ref.set({
+            "raw_error_history":              list(raw_error_history),
+            "smooth_error_history":           list(smooth_error_history),
+            "adaptive_healthy_error_history": list(adaptive_healthy_error_history),
+            "adaptive_threshold_history":     list(adaptive_threshold_history),
+            "last_adaptive_threshold":        last_adaptive_threshold,
+            "saved_at":                       int(time.time()),
+        })
+    except Exception as e:
+        print(f"Firebase history save error: {e}")
+
+def load_history_from_firebase():
+    global raw_error_history, smooth_error_history
+    global adaptive_healthy_error_history, adaptive_threshold_history
+    global last_adaptive_threshold
+    if firebase_ref is None:
+        return
+    try:
+        history_ref = rtdb.reference("/transformer_monitor/scorer_state")
+        state = history_ref.get()
+        if not state:
+            print("No saved scorer state found in Firebase — starting fresh.")
+            return
+        def restore(key, dest):
+            vals = state.get(key, [])
+            if isinstance(vals, list):
+                for v in vals:
+                    dest.append(float(v))
+            elif isinstance(vals, dict):
+                for k in sorted(vals.keys(), key=lambda x: int(x)):
+                    dest.append(float(vals[k]))
+        restore("raw_error_history",              raw_error_history)
+        restore("smooth_error_history",           smooth_error_history)
+        restore("adaptive_healthy_error_history", adaptive_healthy_error_history)
+        restore("adaptive_threshold_history",     adaptive_threshold_history)
+        if state.get("last_adaptive_threshold") is not None:
+            last_adaptive_threshold = float(state["last_adaptive_threshold"])
+        print(f"Scorer state restored — smooth_history={len(smooth_error_history)} pts, "
+              f"adaptive_history={len(adaptive_healthy_error_history)} pts, "
+              f"last_threshold={last_adaptive_threshold}")
+    except Exception as e:
+        print(f"Firebase history load error: {e}")
+
 # ============================================================
 # HELPERS
 # ============================================================
@@ -1165,6 +1213,7 @@ def batch_predict():
         }
 
         write_to_firebase(response)
+        save_history_to_firebase()
         print(f"/batch done in {round(time.time()-t0,3)}s | anomaly={is_anomaly} | health={health:.1f}% | urgency={prescriptive['urgency_level']}")
         return jsonify(response), 200
 
@@ -1173,9 +1222,9 @@ def batch_predict():
         return jsonify({"error": "Internal server error", "details": str(e)}), 500
 
 # Called by gunicorn on module import AND by direct run
-# Called by gunicorn on module import AND by direct run
 init_firebase()
-ensure_loaded()  # pre-load model before first health check hits
+ensure_loaded()
+load_history_from_firebase()
 
 if __name__ == "__main__":
     port = int(os.getenv("PORT", "10000"))
