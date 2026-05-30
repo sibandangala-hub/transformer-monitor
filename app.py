@@ -35,10 +35,6 @@ def add_cors(response):
 # ============================================================
 # FILE PATHS
 # ============================================================
-
-# ============================================================
-# FILE PATHS
-# ============================================================
 MODEL_PATH     = os.getenv("MODEL_PATH",     "lstm_autoencoder.onnx")
 SCALER_PATH    = os.getenv("SCALER_PATH",    "scaler.save")
 THRESHOLD_PATH = os.getenv("THRESHOLD_PATH", "threshold.npy")
@@ -48,7 +44,6 @@ THRESHOLD_PATH = os.getenv("THRESHOLD_PATH", "threshold.npy")
 # ============================================================
 WINDOW_SIZE   = 20
 NUM_FEATURES  = 5
-# Order must match ESP32 and training data exactly
 FEATURE_NAMES = ["current", "oil_temp", "winding_temp", "vibration", "oil_level"]
 FEATURE_INDEX = {name: i for i, name in enumerate(FEATURE_NAMES)}
 
@@ -106,10 +101,8 @@ URGENCY_ORDER = ["NORMAL", "WARNING", "PLAN_MAINTENANCE", "URGENT", "CRITICAL"]
 
 # ============================================================
 # TRANSFORMER-SPECIFIC PRESCRIPTION RULES
-# Derived from IEC 60076, IEEE C57, transformer O&M engineering
 # ============================================================
 PRESCRIPTION_RULES = {
-    # --- CURRENT ---
     ("current", "LOW"): {
         "type": "electrical_underload",
         "label": "Underload / Open-Circuit Check",
@@ -157,8 +150,6 @@ PRESCRIPTION_RULES = {
         "auto_urgent":  "shed_load",
         "auto_critical":"trip_transformer",
     },
-
-    # --- OIL TEMPERATURE ---
     ("oil_temp", "LOW"): {
         "type": "oil_cold",
         "label": "Cold Oil / Pre-Heat Management",
@@ -207,8 +198,6 @@ PRESCRIPTION_RULES = {
         "auto_urgent":  "reduce_load_activate_cooling",
         "auto_critical":"trip_transformer",
     },
-
-    # --- WINDING TEMPERATURE ---
     ("winding_temp", "LOW"): {
         "type": "winding_cold",
         "label": "Cold Winding / WTI Check",
@@ -256,8 +245,6 @@ PRESCRIPTION_RULES = {
         "auto_urgent":  "reduce_load_activate_cooling",
         "auto_critical":"trip_transformer",
     },
-
-    # --- VIBRATION ---
     ("vibration", "LOW"): {
         "type": "vibration_low",
         "label": "Low Vibration / Sensor Check",
@@ -305,8 +292,6 @@ PRESCRIPTION_RULES = {
         "auto_urgent":  "reduce_load_and_inspect",
         "auto_critical":"deenergise_and_inspect",
     },
-
-    # --- OIL LEVEL ---
     ("oil_level", "LOW"): {
         "type": "oil_level_low",
         "label": "Oil Level / Leak Investigation",
@@ -354,8 +339,6 @@ PRESCRIPTION_RULES = {
         "auto_urgent":  "inspect_conservator_pressure",
         "auto_critical":"deenergise_and_inspect",
     },
-
-    # --- MIXED / OBSERVE ---
     ("mixed", "MIXED"): {
         "type": "general_inspection",
         "label": "General Transformer Inspection",
@@ -428,7 +411,7 @@ def init_firebase():
         print("firebase_admin not installed — Firebase write disabled.")
         return
 
-    db_url = os.getenv("FIREBASE_DB_URL", "")
+    db_url   = os.getenv("FIREBASE_DB_URL", "")
     cred_json = os.getenv("FIREBASE_CREDENTIALS_JSON", "")
 
     if not db_url:
@@ -442,7 +425,6 @@ def init_firebase():
             cred = credentials.Certificate(cred_dict)
             firebase_admin.initialize_app(cred, {"databaseURL": db_url})
         else:
-            # Fallback: try application default credentials (e.g. on GCP)
             firebase_admin.initialize_app(options={"databaseURL": db_url})
 
         firebase_ref = rtdb.reference("/transformer_monitor/latest")
@@ -794,7 +776,6 @@ def compute_sensor_states(latest_values, bands):
     return states, distances
 
 def compute_condition_warmup_flag(raw_window, bands):
-    # For transformer: use oil_temp as the thermal warmup indicator
     oil_temp_idx  = FEATURE_INDEX["oil_temp"]
     temp_low      = float(bands["oil_temp"]["low"])
     temp_high     = float(bands["oil_temp"]["high"])
@@ -810,14 +791,12 @@ def should_update_adaptive_history(raw_window, reconstruction_error, active_thre
         return False, "adaptive_disabled", False, None
     operating_bands = get_operating_bands(scaler_obj)
     warmup_like, warmup_exit_temp = compute_condition_warmup_flag(raw_window, operating_bands)
-    # Don't pollute adaptive history with warmup errors UNLESS current/vibration fault
-    # is driving the error — in that case we still block adaptive update (fault data
-    # should never train the healthy baseline)
+    # Block adaptive update during warmup unless overridden by exempt sensors
     effective_warmup_for_adaptive = warmup_like and not exempt_from_warmup
     if effective_warmup_for_adaptive:
         return False, "warmup_like_condition", True, float(warmup_exit_temp)
+    # If current or vibration is HIGH, it is a fault condition — never train adaptive baseline on fault data
     if exempt_from_warmup:
-        # Current or vibration is HIGH — never update adaptive history with fault data
         return False, "exempt_sensor_fault_active", False, float(warmup_exit_temp)
     if health < ADAPTIVE_UPDATE_MIN_HEALTH:
         return False, "health_below_update_limit", False, float(warmup_exit_temp)
@@ -859,17 +838,17 @@ def compute_persistence_factor(anomaly_threshold):
 
 def compute_trend_factor(anomaly_threshold, slope):
     if slope is None or slope <= 0: return 0.0
-    horizon_hours    = max(MIN_RUL_POINTS * SAMPLE_INTERVAL_HOURS, SAMPLE_INTERVAL_HOURS)
+    horizon_hours      = max(MIN_RUL_POINTS * SAMPLE_INTERVAL_HOURS, SAMPLE_INTERVAL_HOURS)
     projected_increase = slope * horizon_hours
     scale = max(0.75 * anomaly_threshold, 1e-6)
     return float(clamp(projected_increase / scale, 0.0, 1.0))
 
 def compute_maintenance_priority(health, rul, smoothed_error, anomaly_threshold, slope):
-    anomaly_severity  = compute_anomaly_severity(smoothed_error, anomaly_threshold)
-    health_degradation= float(clamp(1.0 - (health / 100.0), 0.0, 1.0))
-    rul_risk          = float(clamp(1.0 - (rul / MAX_RUL_HOURS), 0.0, 1.0))
-    trend_factor      = compute_trend_factor(anomaly_threshold, slope)
-    persistence_factor= compute_persistence_factor(anomaly_threshold)
+    anomaly_severity   = compute_anomaly_severity(smoothed_error, anomaly_threshold)
+    health_degradation = float(clamp(1.0 - (health / 100.0), 0.0, 1.0))
+    rul_risk           = float(clamp(1.0 - (rul / MAX_RUL_HOURS), 0.0, 1.0))
+    trend_factor       = compute_trend_factor(anomaly_threshold, slope)
+    persistence_factor = compute_persistence_factor(anomaly_threshold)
     weighted = (
         MPS_WEIGHTS["anomaly_severity"]   * anomaly_severity
         + MPS_WEIGHTS["health_degradation"] * health_degradation
@@ -936,9 +915,9 @@ def contextualise_priority(mps, urgency_level, dominant_feature, dominant_state,
     adjusted_mps     = float(mps)
     adjusted_urgency = urgency_level
     if operating_region == "WARMUP":
-        # Current HIGH or vibration HIGH during warmup = real fault, never cap
+        # Current HIGH or vibration HIGH during warmup is a real fault — never cap these
         if dominant_feature in {"current", "vibration"} and dominant_state == "HIGH":
-            pass  # full urgency preserved — electrical/mechanical fault during warmup is real
+            pass  # full urgency preserved
         else:
             adjusted_mps     = min(adjusted_mps, 35.0)
             adjusted_urgency = cap_urgency(adjusted_urgency, "WARNING")
@@ -971,10 +950,23 @@ def build_actions(rule, urgency_level):
     return actions
 
 def build_prescription_title(rule, urgency_level):
-    return rule.get(f"{'normal' if urgency_level=='NORMAL' else 'warning' if urgency_level=='WARNING' else 'plan' if urgency_level=='PLAN_MAINTENANCE' else 'urgent' if urgency_level=='URGENT' else 'critical'}_title", "--")
+    key_map = {
+        "NORMAL":           "normal_title",
+        "WARNING":          "warning_title",
+        "PLAN_MAINTENANCE": "plan_title",
+        "URGENT":           "urgent_title",
+        "CRITICAL":         "critical_title",
+    }
+    return rule.get(key_map.get(urgency_level, "normal_title"), "--")
 
 def build_auto_action(rule, urgency_level):
-    key_map = {"NORMAL":"auto_normal","WARNING":"auto_warning","PLAN_MAINTENANCE":"auto_plan","URGENT":"auto_urgent","CRITICAL":"auto_critical"}
+    key_map = {
+        "NORMAL":           "auto_normal",
+        "WARNING":          "auto_warning",
+        "PLAN_MAINTENANCE": "auto_plan",
+        "URGENT":           "auto_urgent",
+        "CRITICAL":         "auto_critical",
+    }
     return rule.get(key_map.get(urgency_level, "auto_normal"), "monitor")
 
 def build_prescription_reason(urgency_level, mps, dominant_feature, dominant_pct, dominant_state, operating_region, health, rul, factors, warmup_like):
@@ -998,7 +990,7 @@ def build_prescription_reason(urgency_level, mps, dominant_feature, dominant_pct
             + f"persistence: {factors['persistence_factor']:.2f}.")
 
 def compute_prescriptive_layer(raw_window, contributions, is_anomaly, health, rul, smoothed_error, anomaly_threshold, slope, scaler_obj):
-    latest_values = {name: float(raw_window[-1][FEATURE_INDEX[name]]) for name in FEATURE_NAMES}
+    latest_values    = {name: float(raw_window[-1][FEATURE_INDEX[name]]) for name in FEATURE_NAMES}
     operating_bands  = get_operating_bands(scaler_obj)
     sensor_states, band_distances = compute_sensor_states(latest_values, operating_bands)
     warmup_like, warmup_exit_temp = compute_condition_warmup_flag(raw_window, operating_bands)
@@ -1017,8 +1009,10 @@ def compute_prescriptive_layer(raw_window, contributions, is_anomaly, health, ru
         warmup_like=warmup_like)
 
     urgency_level = determine_urgency_level(mps=mps, health=health, rul=rul, anomaly_severity=mps_factors["anomaly_severity"])
-    adjusted_mps, urgency_level = contextualise_priority(mps=mps, urgency_level=urgency_level,
-        dominant_feature=dominant_feature, dominant_state=dominant_state, operating_region=operating_region)
+    adjusted_mps, urgency_level = contextualise_priority(
+        mps=mps, urgency_level=urgency_level,
+        dominant_feature=dominant_feature, dominant_state=dominant_state,
+        operating_region=operating_region)
 
     rule_key = select_rule_key(dominant_feature, dominant_state, is_anomaly, sensor_states)
     rule     = PRESCRIPTION_RULES[rule_key]
@@ -1130,39 +1124,39 @@ def batch_predict():
         if not valid:
             return jsonify({"error": message}), 400
 
-        raw_window    = np.array(readings, dtype=np.float32)
+        raw_window = np.array(readings, dtype=np.float32)
 
-# ── Early warmup / idle detection (before LSTM inference) ──
-operating_bands_early          = get_operating_bands(scaler)
-warmup_like_early, warmup_exit = compute_condition_warmup_flag(raw_window, operating_bands_early)
-latest_current                 = float(raw_window[-1][FEATURE_INDEX["current"]])
-latest_vibration               = float(raw_window[-1][FEATURE_INDEX["vibration"]])
-is_idle                        = latest_current < MIN_LOAD_CURRENT
+        # ── Early warmup / idle detection (before LSTM inference) ──
+        operating_bands_early          = get_operating_bands(scaler)
+        warmup_like_early, warmup_exit = compute_condition_warmup_flag(raw_window, operating_bands_early)
+        latest_current                 = float(raw_window[-1][FEATURE_INDEX["current"]])
+        latest_vibration               = float(raw_window[-1][FEATURE_INDEX["vibration"]])
+        is_idle                        = latest_current < MIN_LOAD_CURRENT
 
-# Current or vibration genuinely HIGH overrides warmup/idle suppression
-current_high   = latest_current  > operating_bands_early["current"]["high"]
-vibration_high = latest_vibration > operating_bands_early["vibration"]["high"]
-exempt_from_warmup = current_high or vibration_high
+        # Current or vibration genuinely HIGH overrides warmup/idle suppression
+        current_high       = latest_current   > operating_bands_early["current"]["high"]
+        vibration_high     = latest_vibration > operating_bands_early["vibration"]["high"]
+        exempt_from_warmup = current_high or vibration_high
 
-# Effective warmup flag: suppressed only if no critical electrical/mechanical fault present
-effective_warmup = (warmup_like_early or is_idle) and not exempt_from_warmup
+        # Effective warmup: suppressed only if no critical electrical/mechanical fault present
+        effective_warmup = (warmup_like_early or is_idle) and not exempt_from_warmup
 
-scaled_window = scaler.transform(raw_window)
-x_input       = np.expand_dims(scaled_window, axis=0)
-x_pred        = model.run(None, {"input": x_input})[0]
+        scaled_window = scaler.transform(raw_window)
+        x_input       = np.expand_dims(scaled_window, axis=0)
+        x_pred        = model.run(None, {"input": x_input})[0]
 
-base_threshold       = float(threshold)
-adaptive_threshold, adaptive_ready = compute_adaptive_threshold(base_threshold, adaptive_healthy_error_history)
-active_threshold     = float(adaptive_threshold)
-last_adaptive_threshold = active_threshold
-adaptive_threshold_history.append(active_threshold)
+        base_threshold     = float(threshold)
+        adaptive_threshold, adaptive_ready = compute_adaptive_threshold(base_threshold, adaptive_healthy_error_history)
+        active_threshold   = float(adaptive_threshold)
+        last_adaptive_threshold = active_threshold
+        adaptive_threshold_history.append(active_threshold)
 
-reconstruction_error = compute_total_error(x_input, x_pred)
-is_anomaly           = reconstruction_error > active_threshold and not effective_warmup
-smoothed_error       = update_smoothed_error(reconstruction_error)
-health               = compute_health(smoothed_error, active_threshold, warmup_like=effective_warmup)
+        reconstruction_error = compute_total_error(x_input, x_pred)
+        is_anomaly           = reconstruction_error > active_threshold and not effective_warmup
+        smoothed_error       = update_smoothed_error(reconstruction_error)
+        health               = compute_health(smoothed_error, active_threshold, warmup_like=effective_warmup)
 
-        feature_errors           = compute_feature_errors(x_input, x_pred)
+        feature_errors            = compute_feature_errors(x_input, x_pred)
         contributions, main_cause = compute_sensor_contributions(feature_errors)
 
         rul, rul_state = estimate_rul(smoothed_error, active_threshold, warmup_like=effective_warmup)
@@ -1178,9 +1172,13 @@ health               = compute_health(smoothed_error, active_threshold, warmup_l
             health=health, rul=rul, smoothed_error=smoothed_error,
             anomaly_threshold=active_threshold, slope=slope, scaler_obj=scaler)
 
-        adaptive_update  = maybe_update_adaptive_history(raw_window=raw_window,
-            reconstruction_error=reconstruction_error, active_threshold=active_threshold,
-            health=health, ood_score=ood_score, scaler_obj=scaler,
+        adaptive_update = maybe_update_adaptive_history(
+            raw_window=raw_window,
+            reconstruction_error=reconstruction_error,
+            active_threshold=active_threshold,
+            health=health,
+            ood_score=ood_score,
+            scaler_obj=scaler,
             exempt_from_warmup=exempt_from_warmup)
         adaptive_summary = get_adaptive_history_summary(adaptive_healthy_error_history, base_threshold)
 
@@ -1242,7 +1240,10 @@ health               = compute_health(smoothed_error, active_threshold, warmup_l
         traceback.print_exc()
         return jsonify({"error": "Internal server error", "details": str(e)}), 500
 
-# Called by gunicorn on module import AND by direct run
+
+# ============================================================
+# STARTUP
+# ============================================================
 init_firebase()
 ensure_loaded()
 load_history_from_firebase()
