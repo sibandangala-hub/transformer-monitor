@@ -51,9 +51,9 @@ FEATURE_INDEX = {name: i for i, name in enumerate(FEATURE_NAMES)}
 # HEALTH / RUL SETTINGS
 # ============================================================
 ERROR_HISTORY_SIZE   = 30
-MIN_RUL_POINTS       = 6
-EMA_ALPHA            = 0.35
-FAILURE_MULTIPLIER   = 12.0
+MIN_RUL_POINTS       = 8
+EMA_ALPHA            = 0.2
+FAILURE_MULTIPLIER   = 5.0
 MAX_RUL_HOURS        = 100.0
 SAMPLE_INTERVAL_SECONDS = float(os.getenv("SAMPLE_INTERVAL_SECONDS", "10"))
 SAMPLE_INTERVAL_HOURS   = SAMPLE_INTERVAL_SECONDS / 3600.0
@@ -82,12 +82,9 @@ ADAPTIVE_MAX_OOD_FOR_UPDATE   = float(os.getenv("ADAPTIVE_MAX_OOD_FOR_UPDATE","0
 # PRESCRIPTIVE LAYER SETTINGS
 # ============================================================
 DOMINANT_CONTRIBUTION_THRESHOLD = float(os.getenv("DOMINANT_CONTRIBUTION_THRESHOLD", "40.0"))
-PERSISTENCE_LOOKBACK            = int(os.getenv("PERSISTENCE_LOOKBACK",              "5"))
+PERSISTENCE_LOOKBACK            = int(os.getenv("PERSISTENCE_LOOKBACK",              "8"))
 OPERATING_BAND_MARGIN_RATIO     = float(os.getenv("OPERATING_BAND_MARGIN_RATIO",     "0.05"))
 WARMUP_TEMP_MARGIN_RATIO        = float(os.getenv("WARMUP_TEMP_MARGIN_RATIO",        "0.03"))
-MIN_LOAD_CURRENT                = float(os.getenv("MIN_LOAD_CURRENT",                "0.05"))
-WARMUP_HEALTH_FLOOR             = float(os.getenv("WARMUP_HEALTH_FLOOR",             "75.0"))
-WARMUP_RUL_HOURS                = float(os.getenv("WARMUP_RUL_HOURS",                "80.0"))
 
 MPS_WEIGHTS = {
     "anomaly_severity":  0.28,
@@ -101,6 +98,7 @@ URGENCY_ORDER = ["NORMAL", "WARNING", "PLAN_MAINTENANCE", "URGENT", "CRITICAL"]
 
 # ============================================================
 # TRANSFORMER-SPECIFIC PRESCRIPTION RULES
+# Derived from IEC 60076, IEEE C57, transformer O&M engineering
 # ============================================================
 PRESCRIPTION_RULES = {
     ("current", "LOW"): {
@@ -411,7 +409,7 @@ def init_firebase():
         print("firebase_admin not installed — Firebase write disabled.")
         return
 
-    db_url   = os.getenv("FIREBASE_DB_URL", "")
+    db_url    = os.getenv("FIREBASE_DB_URL", "")
     cred_json = os.getenv("FIREBASE_CREDENTIALS_JSON", "")
 
     if not db_url:
@@ -440,54 +438,6 @@ def write_to_firebase(payload: dict):
         firebase_ref.set(payload)
     except Exception as e:
         print(f"Firebase write error: {e}")
-
-def save_history_to_firebase():
-    if firebase_ref is None:
-        return
-    try:
-        history_ref = rtdb.reference("/transformer_monitor/scorer_state")
-        history_ref.set({
-            "raw_error_history":              list(raw_error_history),
-            "smooth_error_history":           list(smooth_error_history),
-            "adaptive_healthy_error_history": list(adaptive_healthy_error_history),
-            "adaptive_threshold_history":     list(adaptive_threshold_history),
-            "last_adaptive_threshold":        last_adaptive_threshold,
-            "saved_at":                       int(time.time()),
-        })
-    except Exception as e:
-        print(f"Firebase history save error: {e}")
-
-def load_history_from_firebase():
-    global raw_error_history, smooth_error_history
-    global adaptive_healthy_error_history, adaptive_threshold_history
-    global last_adaptive_threshold
-    if firebase_ref is None:
-        return
-    try:
-        history_ref = rtdb.reference("/transformer_monitor/scorer_state")
-        state = history_ref.get()
-        if not state:
-            print("No saved scorer state found in Firebase — starting fresh.")
-            return
-        def restore(key, dest):
-            vals = state.get(key, [])
-            if isinstance(vals, list):
-                for v in vals:
-                    dest.append(float(v))
-            elif isinstance(vals, dict):
-                for k in sorted(vals.keys(), key=lambda x: int(x)):
-                    dest.append(float(vals[k]))
-        restore("raw_error_history",              raw_error_history)
-        restore("smooth_error_history",           smooth_error_history)
-        restore("adaptive_healthy_error_history", adaptive_healthy_error_history)
-        restore("adaptive_threshold_history",     adaptive_threshold_history)
-        if state.get("last_adaptive_threshold") is not None:
-            last_adaptive_threshold = float(state["last_adaptive_threshold"])
-        print(f"Scorer state restored — smooth_history={len(smooth_error_history)} pts, "
-              f"adaptive_history={len(adaptive_healthy_error_history)} pts, "
-              f"last_threshold={last_adaptive_threshold}")
-    except Exception as e:
-        print(f"Firebase history load error: {e}")
 
 # ============================================================
 # HELPERS
@@ -569,9 +519,7 @@ def get_adaptive_history_summary(healthy_errors, base_threshold):
         "base_threshold": float(base_threshold),
     }
 
-def compute_health(smoothed_error, anomaly_threshold, warmup_like=False):
-    if warmup_like:
-        return WARMUP_HEALTH_FLOOR
+def compute_health(smoothed_error, anomaly_threshold):
     failure_threshold = anomaly_threshold * FAILURE_MULTIPLIER
     if smoothed_error <= anomaly_threshold:
         return 100.0
@@ -591,9 +539,7 @@ def estimate_trend():
     except Exception:
         return None
 
-def estimate_rul(smoothed_error, anomaly_threshold, warmup_like=False):
-    if warmup_like:
-        return WARMUP_RUL_HOURS, "warmup_idle"
+def estimate_rul(smoothed_error, anomaly_threshold):
     failure_threshold = anomaly_threshold * FAILURE_MULTIPLIER
     health = compute_health(smoothed_error, anomaly_threshold)
     slope  = estimate_trend()
@@ -791,11 +737,10 @@ def should_update_adaptive_history(raw_window, reconstruction_error, active_thre
         return False, "adaptive_disabled", False, None
     operating_bands = get_operating_bands(scaler_obj)
     warmup_like, warmup_exit_temp = compute_condition_warmup_flag(raw_window, operating_bands)
-    # Block adaptive update during warmup unless overridden by exempt sensors
     effective_warmup_for_adaptive = warmup_like and not exempt_from_warmup
     if effective_warmup_for_adaptive:
         return False, "warmup_like_condition", True, float(warmup_exit_temp)
-    # If current or vibration is HIGH, it is a fault condition — never train adaptive baseline on fault data
+    # Fault data must never train the adaptive baseline
     if exempt_from_warmup:
         return False, "exempt_sensor_fault_active", False, float(warmup_exit_temp)
     if health < ADAPTIVE_UPDATE_MIN_HEALTH:
@@ -915,9 +860,11 @@ def contextualise_priority(mps, urgency_level, dominant_feature, dominant_state,
     adjusted_mps     = float(mps)
     adjusted_urgency = urgency_level
     if operating_region == "WARMUP":
-        # Current HIGH or vibration HIGH during warmup is a real fault — never cap these
+        # current HIGH, vibration HIGH, oil level LOW = real faults, never cap during warmup
         if dominant_feature in {"current", "vibration"} and dominant_state == "HIGH":
-            pass  # full urgency preserved
+            pass
+        elif dominant_feature == "oil_level" and dominant_state == "LOW":
+            pass
         else:
             adjusted_mps     = min(adjusted_mps, 35.0)
             adjusted_urgency = cap_urgency(adjusted_urgency, "WARNING")
@@ -1126,20 +1073,18 @@ def batch_predict():
 
         raw_window = np.array(readings, dtype=np.float32)
 
-        # ── Early warmup / idle detection (before LSTM inference) ──
+        # ── Compute operating bands and detect exempt fault conditions ──
         operating_bands_early          = get_operating_bands(scaler)
         warmup_like_early, warmup_exit = compute_condition_warmup_flag(raw_window, operating_bands_early)
         latest_current                 = float(raw_window[-1][FEATURE_INDEX["current"]])
         latest_vibration               = float(raw_window[-1][FEATURE_INDEX["vibration"]])
-        is_idle                        = latest_current < MIN_LOAD_CURRENT
+        latest_oil_level               = float(raw_window[-1][FEATURE_INDEX["oil_level"]])
 
-        # Current or vibration genuinely HIGH overrides warmup/idle suppression
+        # These three conditions are real faults regardless of oil temperature
         current_high       = latest_current   > operating_bands_early["current"]["high"]
         vibration_high     = latest_vibration > operating_bands_early["vibration"]["high"]
-        exempt_from_warmup = current_high or vibration_high
-
-        # Effective warmup: suppressed only if no critical electrical/mechanical fault present
-        effective_warmup = (warmup_like_early or is_idle) and not exempt_from_warmup
+        oil_level_low      = latest_oil_level < operating_bands_early["oil_level"]["low"]
+        exempt_from_warmup = current_high or vibration_high or oil_level_low
 
         scaled_window = scaler.transform(raw_window)
         x_input       = np.expand_dims(scaled_window, axis=0)
@@ -1152,14 +1097,14 @@ def batch_predict():
         adaptive_threshold_history.append(active_threshold)
 
         reconstruction_error = compute_total_error(x_input, x_pred)
-        is_anomaly           = reconstruction_error > active_threshold and not effective_warmup
+        is_anomaly           = reconstruction_error > active_threshold
         smoothed_error       = update_smoothed_error(reconstruction_error)
-        health               = compute_health(smoothed_error, active_threshold, warmup_like=effective_warmup)
+        health               = compute_health(smoothed_error, active_threshold)
 
         feature_errors            = compute_feature_errors(x_input, x_pred)
         contributions, main_cause = compute_sensor_contributions(feature_errors)
 
-        rul, rul_state = estimate_rul(smoothed_error, active_threshold, warmup_like=effective_warmup)
+        rul, rul_state = estimate_rul(smoothed_error, active_threshold)
         slope          = estimate_trend()
 
         ood_score, ood_details, ood_direction_details, ood_feature = compute_ood_score(raw_window, scaler)
@@ -1232,7 +1177,6 @@ def batch_predict():
         }
 
         write_to_firebase(response)
-        save_history_to_firebase()
         print(f"/batch done in {round(time.time()-t0,3)}s | anomaly={is_anomaly} | health={health:.1f}% | urgency={prescriptive['urgency_level']}")
         return jsonify(response), 200
 
@@ -1240,13 +1184,11 @@ def batch_predict():
         traceback.print_exc()
         return jsonify({"error": "Internal server error", "details": str(e)}), 500
 
-
 # ============================================================
 # STARTUP
 # ============================================================
 init_firebase()
 ensure_loaded()
-load_history_from_firebase()
 
 if __name__ == "__main__":
     port = int(os.getenv("PORT", "10000"))
