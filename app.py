@@ -58,7 +58,7 @@ FEATURE_INDEX = {name: i for i, name in enumerate(FEATURE_NAMES)}
 ERROR_HISTORY_SIZE   = 30
 MIN_RUL_POINTS       = 6
 EMA_ALPHA            = 0.35
-FAILURE_MULTIPLIER   = 5.0
+FAILURE_MULTIPLIER   = 12.0
 MAX_RUL_HOURS        = 100.0
 SAMPLE_INTERVAL_SECONDS = float(os.getenv("SAMPLE_INTERVAL_SECONDS", "10"))
 SAMPLE_INTERVAL_HOURS   = SAMPLE_INTERVAL_SECONDS / 3600.0
@@ -90,6 +90,9 @@ DOMINANT_CONTRIBUTION_THRESHOLD = float(os.getenv("DOMINANT_CONTRIBUTION_THRESHO
 PERSISTENCE_LOOKBACK            = int(os.getenv("PERSISTENCE_LOOKBACK",              "5"))
 OPERATING_BAND_MARGIN_RATIO     = float(os.getenv("OPERATING_BAND_MARGIN_RATIO",     "0.05"))
 WARMUP_TEMP_MARGIN_RATIO        = float(os.getenv("WARMUP_TEMP_MARGIN_RATIO",        "0.03"))
+MIN_LOAD_CURRENT                = float(os.getenv("MIN_LOAD_CURRENT",                "0.05"))
+WARMUP_HEALTH_FLOOR             = float(os.getenv("WARMUP_HEALTH_FLOOR",             "75.0"))
+WARMUP_RUL_HOURS                = float(os.getenv("WARMUP_RUL_HOURS",                "80.0"))
 
 MPS_WEIGHTS = {
     "anomaly_severity":  0.28,
@@ -536,7 +539,9 @@ def get_adaptive_history_summary(healthy_errors, base_threshold):
         "base_threshold": float(base_threshold),
     }
 
-def compute_health(smoothed_error, anomaly_threshold):
+def compute_health(smoothed_error, anomaly_threshold, warmup_like=False):
+    if warmup_like:
+        return WARMUP_HEALTH_FLOOR
     failure_threshold = anomaly_threshold * FAILURE_MULTIPLIER
     if smoothed_error <= anomaly_threshold:
         return 100.0
@@ -556,7 +561,9 @@ def estimate_trend():
     except Exception:
         return None
 
-def estimate_rul(smoothed_error, anomaly_threshold):
+def estimate_rul(smoothed_error, anomaly_threshold, warmup_like=False):
+    if warmup_like:
+        return WARMUP_RUL_HOURS, "warmup_idle"
     failure_threshold = anomaly_threshold * FAILURE_MULTIPLIER
     health = compute_health(smoothed_error, anomaly_threshold)
     slope  = estimate_trend()
@@ -1064,6 +1071,13 @@ def batch_predict():
             return jsonify({"error": message}), 400
 
         raw_window    = np.array(readings, dtype=np.float32)
+
+        # ── Early warmup / idle detection (before LSTM inference) ──
+        operating_bands_early         = get_operating_bands(scaler)
+        warmup_like_early, warmup_exit = compute_condition_warmup_flag(raw_window, operating_bands_early)
+        latest_current                 = float(raw_window[-1][FEATURE_INDEX["current"]])
+        is_idle                        = latest_current < MIN_LOAD_CURRENT
+
         scaled_window = scaler.transform(raw_window)
         x_input       = np.expand_dims(scaled_window, axis=0)
         x_pred        = model.run(None, {"input": x_input})[0]
@@ -1075,14 +1089,15 @@ def batch_predict():
         adaptive_threshold_history.append(active_threshold)
 
         reconstruction_error = compute_total_error(x_input, x_pred)
-        is_anomaly           = reconstruction_error > active_threshold
+        # Suppress anomaly flag during idle/warmup — OOD error is expected, not real
+        is_anomaly           = reconstruction_error > active_threshold and not (warmup_like_early or is_idle)
         smoothed_error       = update_smoothed_error(reconstruction_error)
-        health               = compute_health(smoothed_error, active_threshold)
+        health               = compute_health(smoothed_error, active_threshold, warmup_like=warmup_like_early or is_idle)
 
         feature_errors           = compute_feature_errors(x_input, x_pred)
         contributions, main_cause = compute_sensor_contributions(feature_errors)
 
-        rul, rul_state = estimate_rul(smoothed_error, active_threshold)
+        rul, rul_state = estimate_rul(smoothed_error, active_threshold, warmup_like=warmup_like_early or is_idle)
         slope          = estimate_trend()
 
         ood_score, ood_details, ood_direction_details, ood_feature = compute_ood_score(raw_window, scaler)
