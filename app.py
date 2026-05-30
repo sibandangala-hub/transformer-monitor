@@ -805,13 +805,20 @@ def compute_condition_warmup_flag(raw_window, bands):
     warmup_active = latest_temp < warmup_exit and recent_mean < warmup_exit
     return bool(warmup_active), float(warmup_exit)
 
-def should_update_adaptive_history(raw_window, reconstruction_error, active_threshold, health, ood_score, scaler_obj):
+def should_update_adaptive_history(raw_window, reconstruction_error, active_threshold, health, ood_score, scaler_obj, exempt_from_warmup=False):
     if not ADAPTIVE_THRESHOLD_ENABLED:
         return False, "adaptive_disabled", False, None
     operating_bands = get_operating_bands(scaler_obj)
     warmup_like, warmup_exit_temp = compute_condition_warmup_flag(raw_window, operating_bands)
-    if warmup_like:
+    # Don't pollute adaptive history with warmup errors UNLESS current/vibration fault
+    # is driving the error — in that case we still block adaptive update (fault data
+    # should never train the healthy baseline)
+    effective_warmup_for_adaptive = warmup_like and not exempt_from_warmup
+    if effective_warmup_for_adaptive:
         return False, "warmup_like_condition", True, float(warmup_exit_temp)
+    if exempt_from_warmup:
+        # Current or vibration is HIGH — never update adaptive history with fault data
+        return False, "exempt_sensor_fault_active", False, float(warmup_exit_temp)
     if health < ADAPTIVE_UPDATE_MIN_HEALTH:
         return False, "health_below_update_limit", False, float(warmup_exit_temp)
     if reconstruction_error > active_threshold * ADAPTIVE_UPDATE_MAX_ERROR_RATIO:
@@ -820,11 +827,12 @@ def should_update_adaptive_history(raw_window, reconstruction_error, active_thre
         return False, "out_of_distribution", False, float(warmup_exit_temp)
     return True, "accepted", False, float(warmup_exit_temp)
 
-def maybe_update_adaptive_history(raw_window, reconstruction_error, active_threshold, health, ood_score, scaler_obj):
+def maybe_update_adaptive_history(raw_window, reconstruction_error, active_threshold, health, ood_score, scaler_obj, exempt_from_warmup=False):
     should_update, reason, warmup_like, warmup_exit_temp = should_update_adaptive_history(
         raw_window=raw_window, reconstruction_error=reconstruction_error,
         active_threshold=active_threshold, health=health,
         ood_score=ood_score, scaler_obj=scaler_obj,
+        exempt_from_warmup=exempt_from_warmup,
     )
     if should_update:
         adaptive_healthy_error_history.append(float(reconstruction_error))
@@ -928,8 +936,12 @@ def contextualise_priority(mps, urgency_level, dominant_feature, dominant_state,
     adjusted_mps     = float(mps)
     adjusted_urgency = urgency_level
     if operating_region == "WARMUP":
-        adjusted_mps     = min(adjusted_mps, 35.0)
-        adjusted_urgency = cap_urgency(adjusted_urgency, "WARNING")
+        # Current HIGH or vibration HIGH during warmup = real fault, never cap
+        if dominant_feature in {"current", "vibration"} and dominant_state == "HIGH":
+            pass  # full urgency preserved — electrical/mechanical fault during warmup is real
+        else:
+            adjusted_mps     = min(adjusted_mps, 35.0)
+            adjusted_urgency = cap_urgency(adjusted_urgency, "WARNING")
     elif dominant_state == "LOW" and dominant_feature in {"oil_temp", "current", "vibration"}:
         adjusted_mps     = min(adjusted_mps, 55.0)
         adjusted_urgency = cap_urgency(adjusted_urgency, "PLAN_MAINTENANCE")
@@ -1120,32 +1132,40 @@ def batch_predict():
 
         raw_window    = np.array(readings, dtype=np.float32)
 
-        # ── Early warmup / idle detection (before LSTM inference) ──
-        operating_bands_early         = get_operating_bands(scaler)
-        warmup_like_early, warmup_exit = compute_condition_warmup_flag(raw_window, operating_bands_early)
-        latest_current                 = float(raw_window[-1][FEATURE_INDEX["current"]])
-        is_idle                        = latest_current < MIN_LOAD_CURRENT
+# ── Early warmup / idle detection (before LSTM inference) ──
+operating_bands_early          = get_operating_bands(scaler)
+warmup_like_early, warmup_exit = compute_condition_warmup_flag(raw_window, operating_bands_early)
+latest_current                 = float(raw_window[-1][FEATURE_INDEX["current"]])
+latest_vibration               = float(raw_window[-1][FEATURE_INDEX["vibration"]])
+is_idle                        = latest_current < MIN_LOAD_CURRENT
 
-        scaled_window = scaler.transform(raw_window)
-        x_input       = np.expand_dims(scaled_window, axis=0)
-        x_pred        = model.run(None, {"input": x_input})[0]
+# Current or vibration genuinely HIGH overrides warmup/idle suppression
+current_high   = latest_current  > operating_bands_early["current"]["high"]
+vibration_high = latest_vibration > operating_bands_early["vibration"]["high"]
+exempt_from_warmup = current_high or vibration_high
 
-        base_threshold       = float(threshold)
-        adaptive_threshold, adaptive_ready = compute_adaptive_threshold(base_threshold, adaptive_healthy_error_history)
-        active_threshold     = float(adaptive_threshold)
-        last_adaptive_threshold = active_threshold
-        adaptive_threshold_history.append(active_threshold)
+# Effective warmup flag: suppressed only if no critical electrical/mechanical fault present
+effective_warmup = (warmup_like_early or is_idle) and not exempt_from_warmup
 
-        reconstruction_error = compute_total_error(x_input, x_pred)
-        # Suppress anomaly flag during idle/warmup — OOD error is expected, not real
-        is_anomaly           = reconstruction_error > active_threshold and not (warmup_like_early or is_idle)
-        smoothed_error       = update_smoothed_error(reconstruction_error)
-        health               = compute_health(smoothed_error, active_threshold, warmup_like=warmup_like_early or is_idle)
+scaled_window = scaler.transform(raw_window)
+x_input       = np.expand_dims(scaled_window, axis=0)
+x_pred        = model.run(None, {"input": x_input})[0]
+
+base_threshold       = float(threshold)
+adaptive_threshold, adaptive_ready = compute_adaptive_threshold(base_threshold, adaptive_healthy_error_history)
+active_threshold     = float(adaptive_threshold)
+last_adaptive_threshold = active_threshold
+adaptive_threshold_history.append(active_threshold)
+
+reconstruction_error = compute_total_error(x_input, x_pred)
+is_anomaly           = reconstruction_error > active_threshold and not effective_warmup
+smoothed_error       = update_smoothed_error(reconstruction_error)
+health               = compute_health(smoothed_error, active_threshold, warmup_like=effective_warmup)
 
         feature_errors           = compute_feature_errors(x_input, x_pred)
         contributions, main_cause = compute_sensor_contributions(feature_errors)
 
-        rul, rul_state = estimate_rul(smoothed_error, active_threshold, warmup_like=warmup_like_early or is_idle)
+        rul, rul_state = estimate_rul(smoothed_error, active_threshold, warmup_like=effective_warmup)
         slope          = estimate_trend()
 
         ood_score, ood_details, ood_direction_details, ood_feature = compute_ood_score(raw_window, scaler)
@@ -1160,7 +1180,8 @@ def batch_predict():
 
         adaptive_update  = maybe_update_adaptive_history(raw_window=raw_window,
             reconstruction_error=reconstruction_error, active_threshold=active_threshold,
-            health=health, ood_score=ood_score, scaler_obj=scaler)
+            health=health, ood_score=ood_score, scaler_obj=scaler,
+            exempt_from_warmup=exempt_from_warmup)
         adaptive_summary = get_adaptive_history_summary(adaptive_healthy_error_history, base_threshold)
 
         status, led_status = derive_status_and_led(is_anomaly, health, prescriptive["urgency_level"])
