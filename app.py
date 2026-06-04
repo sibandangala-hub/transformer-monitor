@@ -58,7 +58,7 @@ MIN_RUL_POINTS              = 8
 EMA_ALPHA                   = 0.2
 FAILURE_MULTIPLIER          = 5.0
 MAX_RUL_HOURS               = 100.0   # fallback cap — overridden by get_dynamic_rul_cap()  ITEM 3
-SAMPLE_INTERVAL_SECONDS     = float(os.getenv("SAMPLE_INTERVAL_SECONDS", "10"))
+SAMPLE_INTERVAL_SECONDS     = float(os.getenv("SAMPLE_INTERVAL_SECONDS", "2"))
 SAMPLE_INTERVAL_HOURS       = SAMPLE_INTERVAL_SECONDS / 3600.0
 
 INSUFFICIENT_HISTORY_HEALTH_WEIGHT = 0.6
@@ -455,6 +455,11 @@ scaler        = None
 threshold     = None
 startup_error = None
 is_loaded     = False
+
+# Startup grace period — suppress CRITICAL/URGENT for first N windows after boot
+# Prevents cold-start from immediately triggering alarm before sensors warm up
+STARTUP_GRACE_WINDOWS  = int(os.getenv("STARTUP_GRACE_WINDOWS", "15"))  # ~30 seconds at 2s interval
+_inference_call_count  = 0
 
 raw_error_history              = deque(maxlen=ERROR_HISTORY_SIZE)
 smooth_error_history           = deque(maxlen=ERROR_HISTORY_SIZE)
@@ -1328,7 +1333,11 @@ def batch_predict():
         slope, exp_rate, trajectory_type = estimate_trend()
 
         # ITEM 2 — consensus confirmation
-        confirmed_anomaly = is_confirmed_anomaly(is_anomaly)
+        global _inference_call_count
+        _inference_call_count += 1
+        in_grace_period   = _inference_call_count <= STARTUP_GRACE_WINDOWS
+        # During grace period treat all windows as non-anomaly for consensus
+        confirmed_anomaly = is_confirmed_anomaly(is_anomaly) and not in_grace_period
 
         # ITEM 3 — dynamic RUL cap fed into estimate_rul
         rul, rul_state = estimate_rul(smoothed_error, active_threshold, slope=slope)
@@ -1354,6 +1363,12 @@ def batch_predict():
             scaler_obj=scaler,
             exempt_from_warmup=exempt_from_warmup)
         adaptive_summary = get_adaptive_history_summary(adaptive_healthy_error_history, base_threshold)
+
+        # Grace period: cap urgency to WARNING, override health display
+        if in_grace_period and prescriptive["urgency_level"] in ("URGENT", "CRITICAL"):
+            prescriptive["urgency_level"] = "WARNING"
+            prescriptive["prescription_title"] = "System warming up — sensors stabilising"
+            prescriptive["prescription_context"] = "Cold start / warm-up grace period active"
 
         status, led_status = derive_status_and_led(is_anomaly, health, prescriptive["urgency_level"])
         latest = raw_window[-1]
@@ -1406,7 +1421,10 @@ def batch_predict():
             "cross_validation_flags":         prescriptive.pop("cross_validation_flags"),   # ITEM 4
             "cross_validation_clear":         prescriptive.pop("cross_validation_clear"),   # ITEM 4
             **prescriptive,
-            "analysis_timestamp": int(time.time()),
+            "startup_grace_active":  bool(in_grace_period),
+            "startup_grace_window":  _inference_call_count,
+            "startup_grace_total":   STARTUP_GRACE_WINDOWS,
+            "analysis_timestamp":    int(time.time()),
         }
 
         write_to_firebase(response)
