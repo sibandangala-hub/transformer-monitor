@@ -55,7 +55,7 @@ FEATURE_INDEX = {name: i for i, name in enumerate(FEATURE_NAMES)}
 # ============================================================
 ERROR_HISTORY_SIZE          = 30
 MIN_RUL_POINTS              = 8
-EMA_ALPHA                   = 0.2
+EMA_ALPHA                   = 0.25   # faster recovery from anomaly clearance
 FAILURE_MULTIPLIER          = 5.0
 MAX_RUL_HOURS               = 100.0   # fallback cap — overridden by get_dynamic_rul_cap()  ITEM 3
 SAMPLE_INTERVAL_SECONDS     = float(os.getenv("SAMPLE_INTERVAL_SECONDS", "2"))
@@ -84,7 +84,7 @@ ADAPTIVE_MAX_OOD_FOR_UPDATE     = float(os.getenv("ADAPTIVE_MAX_OOD_FOR_UPDATE",
 # ============================================================
 # ITEM 2 — MULTI-WINDOW ANOMALY CONSENSUS
 # ============================================================
-CONSENSUS_WINDOWS = int(os.getenv("CONSENSUS_WINDOWS", "3"))
+CONSENSUS_WINDOWS = int(os.getenv("CONSENSUS_WINDOWS", "5"))   # 10 seconds to confirm anomaly
 
 # ============================================================
 # PRESCRIPTIVE LAYER SETTINGS
@@ -460,6 +460,12 @@ is_loaded     = False
 # Prevents cold-start from immediately triggering alarm before sensors warm up
 STARTUP_GRACE_WINDOWS  = int(os.getenv("STARTUP_GRACE_WINDOWS", "15"))  # ~30 seconds at 2s interval
 _inference_call_count  = 0
+
+# Urgency hysteresis — prevents rapid status flickering during presentation
+# Status can only DROP one level per URGENCY_DOWNGRADE_COOLDOWN windows
+URGENCY_DOWNGRADE_COOLDOWN = int(os.getenv("URGENCY_DOWNGRADE_COOLDOWN", "10"))  # 20 seconds
+_last_urgency_level   = "NORMAL"
+_urgency_hold_counter = 0
 
 raw_error_history              = deque(maxlen=ERROR_HISTORY_SIZE)
 smooth_error_history           = deque(maxlen=ERROR_HISTORY_SIZE)
@@ -986,20 +992,44 @@ def compute_maintenance_priority(health, rul, smoothed_error, anomaly_threshold,
 
 def determine_urgency_level(mps, health, rul, anomaly_severity, confirmed_anomaly):
     """
-    ITEM 2 — URGENT and CRITICAL now require confirmed_anomaly=True
-    (consensus across CONSENSUS_WINDOWS consecutive windows).
-    WARNING still fires on MPS alone — no consensus needed for early warning.
+    ITEM 2 — URGENT and CRITICAL now require confirmed_anomaly=True.
+    Hysteresis: urgency can only DROP one level per URGENCY_DOWNGRADE_COOLDOWN windows
+    to prevent flickering between states during presentation.
     """
+    global _last_urgency_level, _urgency_hold_counter
+
+    # Compute raw urgency from current metrics
     if confirmed_anomaly:
         if mps >= 85 or health <= 15 or rul <= 4 or anomaly_severity >= 0.90:
-            return "CRITICAL"
-        if mps >= 65 or health <= 30 or rul <= 12:
-            return "URGENT"
-    if mps >= 45 or health <= 55 or rul <= 30:
-        return "PLAN_MAINTENANCE"
-    if mps >= 20 or health <= 75 or anomaly_severity > 0:
-        return "WARNING"
-    return "NORMAL"
+            raw_urgency = "CRITICAL"
+        elif mps >= 65 or health <= 30 or rul <= 12:
+            raw_urgency = "URGENT"
+        else:
+            raw_urgency = "WARNING"
+    elif mps >= 45 or health <= 55 or rul <= 30:
+        raw_urgency = "PLAN_MAINTENANCE"
+    elif mps >= 20 or health <= 75 or anomaly_severity > 0:
+        raw_urgency = "WARNING"
+    else:
+        raw_urgency = "NORMAL"
+
+    raw_idx  = URGENCY_ORDER.index(raw_urgency)
+    last_idx = URGENCY_ORDER.index(_last_urgency_level)
+
+    if raw_idx >= last_idx:
+        # Escalation — always immediate, reset hold counter
+        _last_urgency_level = raw_urgency
+        _urgency_hold_counter = 0
+    else:
+        # De-escalation — only drop one level after cooldown expires
+        _urgency_hold_counter += 1
+        if _urgency_hold_counter >= URGENCY_DOWNGRADE_COOLDOWN:
+            # Drop exactly one level toward raw_urgency
+            new_idx = max(raw_idx, last_idx - 1)
+            _last_urgency_level = URGENCY_ORDER[new_idx]
+            _urgency_hold_counter = 0
+
+    return _last_urgency_level
 
 def cap_urgency(urgency_level, max_allowed):
     current_index = URGENCY_ORDER.index(urgency_level)
@@ -1422,6 +1452,8 @@ def batch_predict():
             "cross_validation_clear":         prescriptive.pop("cross_validation_clear"),   # ITEM 4
             **prescriptive,
             "startup_grace_active":  bool(in_grace_period),
+            "urgency_hold_counter":  _urgency_hold_counter,
+            "urgency_downgrade_cooldown": URGENCY_DOWNGRADE_COOLDOWN,
             "startup_grace_window":  _inference_call_count,
             "startup_grace_total":   STARTUP_GRACE_WINDOWS,
             "analysis_timestamp":    int(time.time()),
