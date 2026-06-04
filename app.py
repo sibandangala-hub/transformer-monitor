@@ -55,7 +55,7 @@ FEATURE_INDEX = {name: i for i, name in enumerate(FEATURE_NAMES)}
 # ============================================================
 ERROR_HISTORY_SIZE          = 30
 MIN_RUL_POINTS              = 8
-EMA_ALPHA                   = 0.25   # faster recovery from anomaly clearance
+EMA_ALPHA                   = 0.35   # fast recovery — health responds quickly to clean readings
 FAILURE_MULTIPLIER          = 5.0
 MAX_RUL_HOURS               = 100.0   # fallback cap — overridden by get_dynamic_rul_cap()  ITEM 3
 SAMPLE_INTERVAL_SECONDS     = float(os.getenv("SAMPLE_INTERVAL_SECONDS", "2"))
@@ -90,7 +90,7 @@ CONSENSUS_WINDOWS = int(os.getenv("CONSENSUS_WINDOWS", "5"))   # 10 seconds to c
 # PRESCRIPTIVE LAYER SETTINGS
 # ============================================================
 DOMINANT_CONTRIBUTION_THRESHOLD = float(os.getenv("DOMINANT_CONTRIBUTION_THRESHOLD", "40.0"))
-PERSISTENCE_LOOKBACK            = int(os.getenv("PERSISTENCE_LOOKBACK",              "8"))
+PERSISTENCE_LOOKBACK            = int(os.getenv("PERSISTENCE_LOOKBACK",              "4"))   # 8 seconds lookback
 OPERATING_BAND_MARGIN_RATIO     = float(os.getenv("OPERATING_BAND_MARGIN_RATIO",     "0.05"))
 WARMUP_TEMP_MARGIN_RATIO        = float(os.getenv("WARMUP_TEMP_MARGIN_RATIO",        "0.03"))
 
@@ -463,7 +463,7 @@ _inference_call_count  = 0
 
 # Urgency hysteresis — prevents rapid status flickering during presentation
 # Status can only DROP one level per URGENCY_DOWNGRADE_COOLDOWN windows
-URGENCY_DOWNGRADE_COOLDOWN = int(os.getenv("URGENCY_DOWNGRADE_COOLDOWN", "10"))  # 20 seconds
+URGENCY_DOWNGRADE_COOLDOWN = int(os.getenv("URGENCY_DOWNGRADE_COOLDOWN", "3"))   # 6 seconds per step
 _last_urgency_level   = "NORMAL"
 _urgency_hold_counter = 0
 
@@ -1008,7 +1008,7 @@ def determine_urgency_level(mps, health, rul, anomaly_severity, confirmed_anomal
             raw_urgency = "WARNING"
     elif mps >= 50 or health <= 50 or rul <= 20:
         raw_urgency = "PLAN_MAINTENANCE"
-    elif mps >= 30 or health <= 60 or anomaly_severity > 0.05:
+    elif mps >= 30 or health <= 60 or anomaly_severity > 0.10:
         raw_urgency = "WARNING"
     else:
         raw_urgency = "NORMAL"
