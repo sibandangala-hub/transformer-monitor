@@ -1000,7 +1000,7 @@ def determine_urgency_level(mps, health, rul, anomaly_severity, confirmed_anomal
             raw_urgency = "WARNING"
     elif mps >= 50 or health <= 50 or rul <= 20:
         raw_urgency = "PLAN_MAINTENANCE"
-    elif mps >= 30 or health <= 60 or anomaly_severity > 0.10:
+    elif mps >= 30 or health <= 60 or anomaly_severity > 0.25:
         raw_urgency = "WARNING"
     else:
         raw_urgency = "NORMAL"
