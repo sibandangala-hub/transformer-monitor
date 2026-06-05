@@ -40,7 +40,7 @@ def add_cors(response):
 MODEL_PATH              = os.getenv("MODEL_PATH",              "lstm_autoencoder.onnx")
 SCALER_PATH             = os.getenv("SCALER_PATH",             "scaler.save")
 THRESHOLD_PATH          = os.getenv("THRESHOLD_PATH",          "threshold.npy")
-ADAPTIVE_HISTORY_PATH   = os.getenv("ADAPTIVE_HISTORY_PATH",   "adaptive_history.json")  # ITEM 1
+ADAPTIVE_HISTORY_PATH   = os.getenv("ADAPTIVE_HISTORY_PATH",   "adaptive_history.json")
 
 # ============================================================
 # INPUT SETTINGS
@@ -55,9 +55,9 @@ FEATURE_INDEX = {name: i for i, name in enumerate(FEATURE_NAMES)}
 # ============================================================
 ERROR_HISTORY_SIZE          = 30
 MIN_RUL_POINTS              = 5
-EMA_ALPHA                   = 0.35   # fast recovery — health responds quickly to clean readings
+EMA_ALPHA                   = 0.35
 FAILURE_MULTIPLIER          = 5.0
-MAX_RUL_HOURS               = 100.0   # fallback cap — overridden by get_dynamic_rul_cap()  ITEM 3
+MAX_RUL_HOURS               = 100.0
 SAMPLE_INTERVAL_SECONDS     = float(os.getenv("SAMPLE_INTERVAL_SECONDS", "2"))
 SAMPLE_INTERVAL_HOURS       = SAMPLE_INTERVAL_SECONDS / 3600.0
 
@@ -82,15 +82,15 @@ ADAPTIVE_UPDATE_MIN_HEALTH      = float(os.getenv("ADAPTIVE_UPDATE_MIN_HEALTH", 
 ADAPTIVE_MAX_OOD_FOR_UPDATE     = float(os.getenv("ADAPTIVE_MAX_OOD_FOR_UPDATE","0.12"))
 
 # ============================================================
-# ITEM 2 — MULTI-WINDOW ANOMALY CONSENSUS
+# MULTI-WINDOW ANOMALY CONSENSUS
 # ============================================================
-CONSENSUS_WINDOWS = int(os.getenv("CONSENSUS_WINDOWS", "3"))   # 10 seconds to confirm anomaly
+CONSENSUS_WINDOWS = int(os.getenv("CONSENSUS_WINDOWS", "3"))
 
 # ============================================================
 # PRESCRIPTIVE LAYER SETTINGS
 # ============================================================
 DOMINANT_CONTRIBUTION_THRESHOLD = float(os.getenv("DOMINANT_CONTRIBUTION_THRESHOLD", "40.0"))
-PERSISTENCE_LOOKBACK            = int(os.getenv("PERSISTENCE_LOOKBACK",              "4"))   # 8 seconds lookback
+PERSISTENCE_LOOKBACK            = int(os.getenv("PERSISTENCE_LOOKBACK",              "4"))
 OPERATING_BAND_MARGIN_RATIO     = float(os.getenv("OPERATING_BAND_MARGIN_RATIO",     "0.05"))
 WARMUP_TEMP_MARGIN_RATIO        = float(os.getenv("WARMUP_TEMP_MARGIN_RATIO",        "0.03"))
 
@@ -105,7 +105,7 @@ MPS_WEIGHTS = {
 URGENCY_ORDER = ["NORMAL", "WARNING", "PLAN_MAINTENANCE", "URGENT", "CRITICAL"]
 
 # ============================================================
-# ITEM 6 — SENSOR CROSS-VALIDATION RULES
+# SENSOR CROSS-VALIDATION RULES
 # ============================================================
 CROSS_VALIDATION_RULES = [
     {
@@ -162,7 +162,6 @@ def run_cross_validation(latest_values):
 
 # ============================================================
 # TRANSFORMER-SPECIFIC PRESCRIPTION RULES
-# Derived from IEC 60076, IEEE C57, transformer O&M engineering
 # ============================================================
 PRESCRIPTION_RULES = {
     ("current", "LOW"): {
@@ -456,14 +455,10 @@ threshold     = None
 startup_error = None
 is_loaded     = False
 
-# Startup grace period — suppress CRITICAL/URGENT for first N windows after boot
-# Prevents cold-start from immediately triggering alarm before sensors warm up
-STARTUP_GRACE_WINDOWS  = int(os.getenv("STARTUP_GRACE_WINDOWS", "3"))  # ~30 seconds at 2s interval
+STARTUP_GRACE_WINDOWS  = int(os.getenv("STARTUP_GRACE_WINDOWS", "3"))
 _inference_call_count  = 0
 
-# Urgency hysteresis — prevents rapid status flickering during presentation
-# Status can only DROP one level per URGENCY_DOWNGRADE_COOLDOWN windows
-URGENCY_DOWNGRADE_COOLDOWN = int(os.getenv("URGENCY_DOWNGRADE_COOLDOWN", "3"))   # 6 seconds per step
+URGENCY_DOWNGRADE_COOLDOWN = int(os.getenv("URGENCY_DOWNGRADE_COOLDOWN", "3"))
 _last_urgency_level   = "NORMAL"
 _urgency_hold_counter = 0
 
@@ -473,22 +468,43 @@ adaptive_healthy_error_history = deque(maxlen=ADAPTIVE_HISTORY_SIZE)
 adaptive_threshold_history     = deque(maxlen=ERROR_HISTORY_SIZE)
 last_adaptive_threshold        = None
 
-# ITEM 2 — consensus buffer
 anomaly_consensus_buffer = deque(maxlen=CONSENSUS_WINDOWS)
 
 firebase_ref = None
 
 # ============================================================
-# ITEM 1 — PERSIST / LOAD ADAPTIVE HISTORY
+# FIX 3 — PERSIST ADAPTIVE HISTORY TO FIREBASE (survives redeploys)
 # ============================================================
 def save_adaptive_history():
+    # Primary: Firebase — survives Render redeploys
+    if firebase_ref is not None:
+        try:
+            rtdb.reference("/transformer_monitor/scorer_state/adaptive_history").set(
+                list(adaptive_healthy_error_history))
+            return
+        except Exception as e:
+            print(f"Adaptive history Firebase save warning: {e}")
+    # Fallback: local disk
     try:
         with open(ADAPTIVE_HISTORY_PATH, "w") as f:
             json.dump(list(adaptive_healthy_error_history), f)
     except Exception as e:
-        print(f"Adaptive history save warning: {e}")
+        print(f"Adaptive history disk save warning: {e}")
 
 def load_adaptive_history():
+    # Primary: Firebase
+    if firebase_ref is not None:
+        try:
+            data = rtdb.reference("/transformer_monitor/scorer_state/adaptive_history").get()
+            if data:
+                loaded = [float(v) for v in data[-ADAPTIVE_HISTORY_SIZE:]]
+                for v in loaded:
+                    adaptive_healthy_error_history.append(v)
+                print(f"Adaptive history loaded from Firebase: {len(loaded)} pts.")
+                return
+        except Exception as e:
+            print(f"Adaptive history Firebase load warning: {e}")
+    # Fallback: local disk
     if not os.path.exists(ADAPTIVE_HISTORY_PATH):
         print("No saved adaptive history found — starting fresh.")
         return
@@ -498,9 +514,9 @@ def load_adaptive_history():
         loaded = [float(v) for v in data[-ADAPTIVE_HISTORY_SIZE:]]
         for v in loaded:
             adaptive_healthy_error_history.append(v)
-        print(f"Adaptive history loaded: {len(loaded)} points restored from disk.")
+        print(f"Adaptive history loaded from disk: {len(loaded)} pts.")
     except Exception as e:
-        print(f"Adaptive history load warning (starting fresh): {e}")
+        print(f"Adaptive history disk load warning (starting fresh): {e}")
 
 # ============================================================
 # FIREBASE INIT
@@ -630,17 +646,12 @@ def compute_health(smoothed_error, anomaly_threshold):
     return float(clamp(health, 0.0, 100.0))
 
 # ============================================================
-# ITEM 5 — ADVANCED TREND: LINEAR + EXPONENTIAL FIT
+# ADVANCED TREND: LINEAR + EXPONENTIAL FIT
 # ============================================================
 def _exp_model(x, a, b):
     return a * np.exp(b * x)
 
 def estimate_trend():
-    """
-    Returns (slope, exp_rate, trajectory_type).
-    exp_rate is None when exponential fit was not attempted or did not converge.
-    trajectory_type is 'linear', 'exponential', or None (insufficient history).
-    """
     if len(smooth_error_history) < MIN_RUL_POINTS:
         return None, None, None
 
@@ -652,7 +663,6 @@ def estimate_trend():
     except Exception:
         return None, None, None
 
-    # Only attempt exponential fit when actively degrading and enough points exist
     if slope > 0 and len(y) >= MIN_RUL_POINTS and np.min(y) > 0:
         try:
             popt, _ = curve_fit(
@@ -667,7 +677,6 @@ def estimate_trend():
             ss_tot = float(np.sum((y - np.mean(y)) ** 2))
             r2_exp = 1.0 - ss_res / ss_tot if ss_tot > 1e-12 else 0.0
 
-            # Use exponential only if it fits well (R² > 0.75)
             if r2_exp > 0.75 and b_fit > 0:
                 return slope, float(b_fit), "exponential"
         except Exception:
@@ -676,20 +685,14 @@ def estimate_trend():
     return slope, None, "linear"
 
 # ============================================================
-# ITEM 3 — DYNAMIC RUL CAP
+# DYNAMIC RUL CAP — capped at 100h in all cases
 # ============================================================
 def get_dynamic_rul_cap(health, slope, rul_state):
-    """
-    Returns a context-aware RUL ceiling.
-    Healthy stable machines get a much higher cap so the dashboard
-    correctly reflects genuine long remaining life instead of always
-    hitting the 100-hour ceiling.
-    """
     if rul_state == "stable" and health >= 95 and (slope is None or slope <= 0):
-        return 100.0   # was 500.0
+        return 100.0
     if health >= 80 and (slope is None or slope <= 0.0):
-        return 100.0   # was 200.0
-    return 100.0  # degrading or low-health machines
+        return 100.0
+    return 100.0
 
 def estimate_rul(smoothed_error, anomaly_threshold, slope=None, rul_state_hint=None):
     failure_threshold = anomaly_threshold * FAILURE_MULTIPLIER
@@ -712,7 +715,6 @@ def estimate_rul(smoothed_error, anomaly_threshold, slope=None, rul_state_hint=N
         rul = STABLE_HEALTH_WEIGHT * health_reserve
         return float(clamp(rul, 0.0, rul_cap)), "stable"
 
-    # Degrading
     rul_cap = get_dynamic_rul_cap(health, slope, "degrading")
     health_reserve = (health / 100.0) * rul_cap
     projected_hours = clamp(distance_to_failure / slope, 0.0, rul_cap)
@@ -829,16 +831,9 @@ def derive_status_and_led(is_anomaly, health_value, urgency_level=None):
     return "Normal", "GREEN"
 
 # ============================================================
-# ITEM 2 — CONSENSUS ANOMALY CONFIRMATION
+# CONSENSUS ANOMALY CONFIRMATION
 # ============================================================
 def is_confirmed_anomaly(current_anomaly_flag):
-    """
-    Appends current window result to consensus buffer.
-    Returns True only when CONSENSUS_WINDOWS consecutive windows
-    all flagged as anomaly — preventing transient spikes from
-    escalating urgency to URGENT or CRITICAL.
-    WARNING can still trigger on a single window via the MPS path.
-    """
     anomaly_consensus_buffer.append(int(bool(current_anomaly_flag)))
     if len(anomaly_consensus_buffer) < CONSENSUS_WINDOWS:
         return False
@@ -937,7 +932,7 @@ def maybe_update_adaptive_history(raw_window, reconstruction_error, active_thres
     )
     if should_update:
         adaptive_healthy_error_history.append(float(reconstruction_error))
-        save_adaptive_history()  # ITEM 1 — persist on every accepted update
+        save_adaptive_history()
     return {
         "applied":                 bool(should_update),
         "reason":                  reason,
@@ -990,15 +985,12 @@ def compute_maintenance_priority(health, rul, smoothed_error, anomaly_threshold,
     }
     return float(clamp(mps, 0.0, 100.0)), factors
 
+# ============================================================
+# FIX 1 — URGENCY HYSTERESIS: bypass hold when anomaly fully clears
+# ============================================================
 def determine_urgency_level(mps, health, rul, anomaly_severity, confirmed_anomaly):
-    """
-    ITEM 2 — URGENT and CRITICAL now require confirmed_anomaly=True.
-    Hysteresis: urgency can only DROP one level per URGENCY_DOWNGRADE_COOLDOWN windows
-    to prevent flickering between states during presentation.
-    """
     global _last_urgency_level, _urgency_hold_counter
 
-    # Compute raw urgency from current metrics
     if confirmed_anomaly:
         if mps >= 85 or health <= 15 or rul <= 4 or anomaly_severity >= 0.90:
             raw_urgency = "CRITICAL"
@@ -1017,14 +1009,17 @@ def determine_urgency_level(mps, health, rul, anomaly_severity, confirmed_anomal
     last_idx = URGENCY_ORDER.index(_last_urgency_level)
 
     if raw_idx >= last_idx:
-        # Escalation — always immediate, reset hold counter
+        # Escalation — always immediate
         _last_urgency_level = raw_urgency
         _urgency_hold_counter = 0
+    elif anomaly_severity == 0.0 and raw_urgency == "NORMAL":
+        # FIX 1: anomaly fully resolved — bypass hysteresis, recover immediately
+        _last_urgency_level = "NORMAL"
+        _urgency_hold_counter = 0
     else:
-        # De-escalation — only drop one level after cooldown expires
+        # De-escalation — drop one level after cooldown
         _urgency_hold_counter += 1
         if _urgency_hold_counter >= URGENCY_DOWNGRADE_COOLDOWN:
-            # Drop exactly one level toward raw_urgency
             new_idx = max(raw_idx, last_idx - 1)
             _last_urgency_level = URGENCY_ORDER[new_idx]
             _urgency_hold_counter = 0
@@ -1036,7 +1031,10 @@ def cap_urgency(urgency_level, max_allowed):
     max_index     = URGENCY_ORDER.index(max_allowed)
     return URGENCY_ORDER[min(current_index, max_index)]
 
-def determine_dominant_feature(contributions, is_anomaly, mps):
+# ============================================================
+# FIX 2 — MAIN CAUSE: only name a feature if it is out of band
+# ============================================================
+def determine_dominant_feature(contributions, is_anomaly, mps, sensor_states=None):
     if not contributions:
         return "observe", 0.0
     dominant_feature = max(contributions, key=contributions.get)
@@ -1045,6 +1043,9 @@ def determine_dominant_feature(contributions, is_anomaly, mps):
         return "observe", dominant_pct
     if dominant_pct < DOMINANT_CONTRIBUTION_THRESHOLD:
         return "mixed", dominant_pct
+    # FIX 2: if the top contributing feature is in a NORMAL state, don't name it as the cause
+    if sensor_states and sensor_states.get(dominant_feature) == "NORMAL" and mps < 35:
+        return "observe", dominant_pct
     return dominant_feature, dominant_pct
 
 def determine_operating_region(is_anomaly, sensor_states, dominant_feature, dominant_state, warmup_like):
@@ -1168,14 +1169,16 @@ def compute_prescriptive_layer(raw_window, contributions, is_anomaly, health, ru
     sensor_states, band_distances = compute_sensor_states(latest_values, operating_bands)
     warmup_like, warmup_exit_temp = compute_condition_warmup_flag(raw_window, operating_bands)
 
-    # ITEM 4 — cross-validation
     cross_validation_flags = run_cross_validation(latest_values)
 
     mps, mps_factors = compute_maintenance_priority(
         health=health, rul=rul, smoothed_error=smoothed_error,
         anomaly_threshold=anomaly_threshold, slope=slope)
 
-    dominant_feature, dominant_pct = determine_dominant_feature(contributions, is_anomaly, mps)
+    # FIX 2: pass sensor_states so dominant feature respects out-of-band check
+    dominant_feature, dominant_pct = determine_dominant_feature(
+        contributions, is_anomaly, mps, sensor_states=sensor_states)
+
     dominant_state = sensor_states.get(dominant_feature, "NORMAL") if dominant_feature in FEATURE_NAMES else (
         "MIXED" if dominant_feature == "mixed" else "NORMAL")
 
@@ -1184,7 +1187,6 @@ def compute_prescriptive_layer(raw_window, contributions, is_anomaly, health, ru
         dominant_feature=dominant_feature, dominant_state=dominant_state,
         warmup_like=warmup_like)
 
-    # ITEM 2 — pass confirmed_anomaly to urgency determination
     urgency_level = determine_urgency_level(
         mps=mps, health=health, rul=rul,
         anomaly_severity=mps_factors["anomaly_severity"],
@@ -1195,7 +1197,6 @@ def compute_prescriptive_layer(raw_window, contributions, is_anomaly, health, ru
         dominant_feature=dominant_feature, dominant_state=dominant_state,
         operating_region=operating_region)
 
-    # Escalate urgency if cross-validation raises a severe flag
     if cross_validation_flags:
         highest_cv_severity = max(
             (URGENCY_ORDER.index(f["severity"]) for f in cross_validation_flags),
@@ -1238,12 +1239,12 @@ def compute_prescriptive_layer(raw_window, contributions, is_anomaly, health, ru
         "operating_region":             operating_region,
         "condition_warmup_flag":        bool(warmup_like),
         "warmup_exit_temperature":      round(float(warmup_exit_temp), 4),
-        "cross_validation_flags":       cross_validation_flags,   # ITEM 4
+        "cross_validation_flags":       cross_validation_flags,
         "cross_validation_clear":       len(cross_validation_flags) == 0,
-        "confirmed_anomaly":            bool(confirmed_anomaly),   # ITEM 2
+        "confirmed_anomaly":            bool(confirmed_anomaly),
         "consensus_windows_required":   CONSENSUS_WINDOWS,
         "consensus_windows_filled":     len(anomaly_consensus_buffer),
-        "trajectory_type":              trajectory_type,           # ITEM 5
+        "trajectory_type":              trajectory_type,
         "operating_bands":              {
             name: {"low": round(float(operating_bands[name]["low"]), 4),
                    "high": round(float(operating_bands[name]["high"]), 4)}
@@ -1273,7 +1274,7 @@ def load_all():
     scaler    = scaler_local
     threshold = threshold_local
     last_adaptive_threshold = threshold_local
-    load_adaptive_history()  # ITEM 1 — restore history from disk after loading models
+    load_adaptive_history()
     is_loaded = True
 
 def ensure_loaded():
@@ -1329,7 +1330,6 @@ def batch_predict():
 
         raw_window = np.array(readings, dtype=np.float32)
 
-        # ── Operating bands and exempt fault detection ──
         operating_bands_early          = get_operating_bands(scaler)
         warmup_like_early, warmup_exit = compute_condition_warmup_flag(raw_window, operating_bands_early)
         latest_current                 = float(raw_window[-1][FEATURE_INDEX["current"]])
@@ -1359,17 +1359,13 @@ def batch_predict():
         feature_errors            = compute_feature_errors(x_input, x_pred)
         contributions, main_cause = compute_sensor_contributions(feature_errors)
 
-        # ITEM 5 — advanced trend with exponential detection
         slope, exp_rate, trajectory_type = estimate_trend()
 
-        # ITEM 2 — consensus confirmation
         global _inference_call_count
         _inference_call_count += 1
         in_grace_period   = _inference_call_count <= STARTUP_GRACE_WINDOWS
-        # During grace period treat all windows as non-anomaly for consensus
         confirmed_anomaly = is_confirmed_anomaly(is_anomaly) and not in_grace_period
 
-        # ITEM 3 — dynamic RUL cap fed into estimate_rul
         rul, rul_state = estimate_rul(smoothed_error, active_threshold, slope=slope)
 
         ood_score, ood_details, ood_direction_details, ood_feature = compute_ood_score(raw_window, scaler)
@@ -1381,8 +1377,8 @@ def batch_predict():
             raw_window=raw_window, contributions=contributions, is_anomaly=is_anomaly,
             health=health, rul=rul, smoothed_error=smoothed_error,
             anomaly_threshold=active_threshold, slope=slope, scaler_obj=scaler,
-            confirmed_anomaly=confirmed_anomaly,       # ITEM 2
-            trajectory_type=trajectory_type)           # ITEM 5
+            confirmed_anomaly=confirmed_anomaly,
+            trajectory_type=trajectory_type)
 
         adaptive_update = maybe_update_adaptive_history(
             raw_window=raw_window,
@@ -1394,7 +1390,6 @@ def batch_predict():
             exempt_from_warmup=exempt_from_warmup)
         adaptive_summary = get_adaptive_history_summary(adaptive_healthy_error_history, base_threshold)
 
-        # Grace period: cap urgency to WARNING, override health display
         if in_grace_period and prescriptive["urgency_level"] in ("URGENT", "CRITICAL"):
             prescriptive["urgency_level"] = "WARNING"
             prescriptive["prescription_title"] = "System warming up — sensors stabilising"
@@ -1405,7 +1400,7 @@ def batch_predict():
 
         response = {
             "is_anomaly":           bool(is_anomaly),
-            "confirmed_anomaly":    bool(confirmed_anomaly),           # ITEM 2
+            "confirmed_anomaly":    bool(confirmed_anomaly),
             "status":               status,
             "led_status":           led_status,
             "health":               round(float(health), 2),
@@ -1440,16 +1435,16 @@ def batch_predict():
             "adaptive_warmup_block":          bool(adaptive_update["warmup_like"]),
             "adaptive_warmup_exit_temperature": round(float(adaptive_update["warmup_exit_temperature"]), 4) if adaptive_update["warmup_exit_temperature"] is not None else None,
             "degradation_rate":               round(float(slope), 6) if slope is not None else None,
-            "exponential_rate":               round(float(exp_rate), 6) if exp_rate is not None else None,   # ITEM 5
-            "trajectory_type":                trajectory_type,                                                # ITEM 5
+            "exponential_rate":               round(float(exp_rate), 6) if exp_rate is not None else None,
+            "trajectory_type":                trajectory_type,
             "confidence_level":               confidence_level,
             "confidence_score":               round(float(confidence_score), 2),
             "ood_score":                      round(float(ood_score), 6) if ood_score is not None else None,
             "ood_direction_details":          ood_direction_details,
             "uncertainty_reason":             uncertainty_reason,
             "uncertainty_sources":            confidence_sources,
-            "cross_validation_flags":         prescriptive.pop("cross_validation_flags"),   # ITEM 4
-            "cross_validation_clear":         prescriptive.pop("cross_validation_clear"),   # ITEM 4
+            "cross_validation_flags":         prescriptive.pop("cross_validation_flags"),
+            "cross_validation_clear":         prescriptive.pop("cross_validation_clear"),
             **prescriptive,
             "startup_grace_active":  bool(in_grace_period),
             "urgency_hold_counter":  _urgency_hold_counter,
