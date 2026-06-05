@@ -679,17 +679,7 @@ def estimate_trend():
 # ITEM 3 — DYNAMIC RUL CAP
 # ============================================================
 def get_dynamic_rul_cap(health, slope, rul_state):
-    """
-    Returns a context-aware RUL ceiling.
-    Healthy stable machines get a much higher cap so the dashboard
-    correctly reflects genuine long remaining life instead of always
-    hitting the 100-hour ceiling.
-    """
-    if rul_state == "stable" and health >= 95 and (slope is None or slope <= 0):
-        return 500.0
-    if health >= 80 and (slope is None or slope <= 0.0):
-        return 200.0
-    return 100.0  # degrading or low-health machines keep the conservative cap
+    return 100.0
 
 def estimate_rul(smoothed_error, anomaly_threshold, slope=None, rul_state_hint=None):
     failure_threshold = anomaly_threshold * FAILURE_MULTIPLIER
