@@ -45,7 +45,7 @@ ADAPTIVE_HISTORY_PATH   = os.getenv("ADAPTIVE_HISTORY_PATH",   "adaptive_history
 # ============================================================
 # INPUT SETTINGS
 # ============================================================
-WINDOW_SIZE   = 20
+WINDOW_SIZE   = 5
 NUM_FEATURES  = 5
 FEATURE_NAMES = ["current", "oil_temp", "winding_temp", "vibration", "oil_level"]
 FEATURE_INDEX = {name: i for i, name in enumerate(FEATURE_NAMES)}
@@ -54,7 +54,7 @@ FEATURE_INDEX = {name: i for i, name in enumerate(FEATURE_NAMES)}
 # HEALTH / RUL SETTINGS
 # ============================================================
 ERROR_HISTORY_SIZE          = 30
-MIN_RUL_POINTS              = 8
+MIN_RUL_POINTS              = 5
 EMA_ALPHA                   = 0.35   # fast recovery — health responds quickly to clean readings
 FAILURE_MULTIPLIER          = 5.0
 MAX_RUL_HOURS               = 100.0   # fallback cap — overridden by get_dynamic_rul_cap()  ITEM 3
@@ -84,7 +84,7 @@ ADAPTIVE_MAX_OOD_FOR_UPDATE     = float(os.getenv("ADAPTIVE_MAX_OOD_FOR_UPDATE",
 # ============================================================
 # ITEM 2 — MULTI-WINDOW ANOMALY CONSENSUS
 # ============================================================
-CONSENSUS_WINDOWS = int(os.getenv("CONSENSUS_WINDOWS", "5"))   # 10 seconds to confirm anomaly
+CONSENSUS_WINDOWS = int(os.getenv("CONSENSUS_WINDOWS", "3"))   # 10 seconds to confirm anomaly
 
 # ============================================================
 # PRESCRIPTIVE LAYER SETTINGS
@@ -458,7 +458,7 @@ is_loaded     = False
 
 # Startup grace period — suppress CRITICAL/URGENT for first N windows after boot
 # Prevents cold-start from immediately triggering alarm before sensors warm up
-STARTUP_GRACE_WINDOWS  = int(os.getenv("STARTUP_GRACE_WINDOWS", "15"))  # ~30 seconds at 2s interval
+STARTUP_GRACE_WINDOWS  = int(os.getenv("STARTUP_GRACE_WINDOWS", "3"))  # ~30 seconds at 2s interval
 _inference_call_count  = 0
 
 # Urgency hysteresis — prevents rapid status flickering during presentation
