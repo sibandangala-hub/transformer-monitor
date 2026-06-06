@@ -45,7 +45,7 @@ ADAPTIVE_HISTORY_PATH   = os.getenv("ADAPTIVE_HISTORY_PATH",   "adaptive_history
 # ============================================================
 # INPUT SETTINGS
 # ============================================================
-WINDOW_SIZE   = 5
+WINDOW_SIZE   = 20
 NUM_FEATURES  = 5
 FEATURE_NAMES = ["current", "oil_temp", "winding_temp", "vibration", "oil_level"]
 FEATURE_INDEX = {name: i for i, name in enumerate(FEATURE_NAMES)}
@@ -54,11 +54,11 @@ FEATURE_INDEX = {name: i for i, name in enumerate(FEATURE_NAMES)}
 # HEALTH / RUL SETTINGS
 # ============================================================
 ERROR_HISTORY_SIZE          = 30
-MIN_RUL_POINTS              = 5
-EMA_ALPHA                   = 0.35
+MIN_RUL_POINTS              = 8
+EMA_ALPHA                   = 0.2
 FAILURE_MULTIPLIER          = 5.0
 MAX_RUL_HOURS               = 100.0   # fallback cap — overridden by get_dynamic_rul_cap()  ITEM 3
-SAMPLE_INTERVAL_SECONDS     = float(os.getenv("SAMPLE_INTERVAL_SECONDS", "2"))
+SAMPLE_INTERVAL_SECONDS     = float(os.getenv("SAMPLE_INTERVAL_SECONDS", "10"))
 SAMPLE_INTERVAL_HOURS       = SAMPLE_INTERVAL_SECONDS / 3600.0
 
 INSUFFICIENT_HISTORY_HEALTH_WEIGHT = 0.6
@@ -90,7 +90,7 @@ CONSENSUS_WINDOWS = int(os.getenv("CONSENSUS_WINDOWS", "3"))
 # PRESCRIPTIVE LAYER SETTINGS
 # ============================================================
 DOMINANT_CONTRIBUTION_THRESHOLD = float(os.getenv("DOMINANT_CONTRIBUTION_THRESHOLD", "40.0"))
-PERSISTENCE_LOOKBACK            = int(os.getenv("PERSISTENCE_LOOKBACK",              "4"))
+PERSISTENCE_LOOKBACK            = int(os.getenv("PERSISTENCE_LOOKBACK",              "8"))
 OPERATING_BAND_MARGIN_RATIO     = float(os.getenv("OPERATING_BAND_MARGIN_RATIO",     "0.05"))
 WARMUP_TEMP_MARGIN_RATIO        = float(os.getenv("WARMUP_TEMP_MARGIN_RATIO",        "0.03"))
 
@@ -668,17 +668,8 @@ def estimate_trend():
 # ITEM 3 — DYNAMIC RUL CAP
 # ============================================================
 def get_dynamic_rul_cap(health, slope, rul_state):
-    """
-    Returns a context-aware RUL ceiling.
-    Healthy stable machines get a much higher cap so the dashboard
-    correctly reflects genuine long remaining life instead of always
-    hitting the 100-hour ceiling.
-    """
-    if rul_state == "stable" and health >= 95 and (slope is None or slope <= 0):
-        return 500.0
-    if health >= 80 and (slope is None or slope <= 0.0):
-        return 200.0
-    return 100.0  # degrading or low-health machines keep the conservative cap
+    """Hard cap at 100 h across all states for consistent dashboard display."""
+    return 100.0
 
 def estimate_rul(smoothed_error, anomaly_threshold, slope=None, rul_state_hint=None):
     failure_threshold = anomaly_threshold * FAILURE_MULTIPLIER
@@ -1096,34 +1087,24 @@ def build_auto_action(rule, urgency_level):
 def build_prescription_reason(urgency_level, mps, dominant_feature, dominant_pct, dominant_state,
                                operating_region, health, rul, factors, warmup_like,
                                trajectory_type=None, cross_validation_flags=None):
-    cv_text = ""
+    parts = []
     if cross_validation_flags:
-        flags_summary = "; ".join(f["flag"] for f in cross_validation_flags)
-        cv_text = f"Cross-validation alert(s): {flags_summary}. "
-
-    traj_text = ""
+        parts.append("; ".join(f["flag"] for f in cross_validation_flags) + " flagged.")
     if trajectory_type == "exponential":
-        traj_text = "Degradation trend is exponential — accelerating deterioration detected. "
-
+        parts.append("Accelerating degradation detected.")
+    if warmup_like:
+        parts.append("Warm-up condition active.")
     if dominant_feature == "observe":
-        return (cv_text + traj_text +
-                f"Transformer condition is stable. Operating region: {operating_region}. "
-                f"MPS: {mps:.2f}, health: {health:.1f}%, RUL: {rul:.1f} h. No immediate action required.")
-    state_text = dominant_state.lower() if dominant_state else "unknown"
-    dom_text = (
-        f"{dominant_feature.replace('_',' ').capitalize()} is the dominant contributor ({dominant_pct:.1f}%) in a {state_text} state. "
-        if dominant_feature not in {"mixed", "observe"}
-        else "No single sensor is strongly dominant — a general inspection is recommended. "
-    )
-    warmup_text = "Cold oil / warm-up condition detected. " if warmup_like else ""
-    return (cv_text + traj_text + warmup_text + dom_text
-            + f"Operating region: {operating_region}. "
-            + f"Urgency: {urgency_level} | MPS: {mps:.2f} | Health: {health:.1f}% | RUL: {rul:.1f} h. "
-            + f"Score drivers — anomaly severity: {factors['anomaly_severity']:.2f}, "
-            + f"health degradation: {factors['health_degradation']:.2f}, "
-            + f"RUL risk: {factors['rul_risk']:.2f}, "
-            + f"trend: {factors['trend_factor']:.2f}, "
-            + f"persistence: {factors['persistence_factor']:.2f}.")
+        parts.append(f"System stable — health {health:.0f}%, RUL {rul:.0f} h.")
+    elif dominant_feature == "mixed":
+        parts.append(f"Mixed sensor anomaly — health {health:.0f}%, RUL {rul:.0f} h.")
+    else:
+        state_text = dominant_state.lower() if dominant_state else "abnormal"
+        parts.append(
+            f"{dominant_feature.replace('_',' ').capitalize()} {state_text} "
+            f"({dominant_pct:.0f}% contribution) — health {health:.0f}%, RUL {rul:.0f} h."
+        )
+    return " ".join(parts)
 
 def compute_prescriptive_layer(raw_window, contributions, is_anomaly, health, rul,
                                 smoothed_error, anomaly_threshold, slope, scaler_obj,
